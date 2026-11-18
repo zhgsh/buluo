@@ -88,7 +88,7 @@ function sanitizeRobot(robot) {
 
 export async function uploadWechatMiniGame({
   version = '1.0.0',
-  desc = '部落冲突 · 微信小游戏发布版本',
+  desc = '天启崛起 · 微信小游戏发布版本',
   robot = process.env.WECHAT_ROBOT || 1,
   env = process.env,
   onStep,
@@ -106,7 +106,7 @@ export async function uploadWechatMiniGame({
 
   const creds = getWechatPublishCredentials(env);
   const targetVersion = sanitizeVersion(version);
-  const targetDesc = (typeof desc === 'string' && desc.trim()) || '部落冲突 · 微信小游戏发布版本';
+  const targetDesc = (typeof desc === 'string' && desc.trim()) || '天启崛起 · 微信小游戏发布版本';
   const targetRobot = sanitizeRobot(robot);
 
   pushStep('build', '正在打包微信小游戏产物 (dist-wechat)...');

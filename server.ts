@@ -98,7 +98,7 @@ async function createApp() {
     const desc =
       typeof req.body?.desc === 'string' && req.body.desc.trim()
         ? req.body.desc.trim()
-        : '部落冲突 · 微信小游戏发布版';
+        : '天启崛起 · 微信小游戏发布版';
     const robot = Number(req.body?.robot ?? 1);
 
     try {
@@ -215,7 +215,7 @@ async function createApp() {
   }
 
   httpServer.listen(PORT, HOST, () => {
-    console.log(`[server] Clash of Clans + WeChat CI API running at http://${HOST}:${PORT}`);
+    console.log(`[server] 天启崛起 + WeChat CI API running at http://${HOST}:${PORT}`);
     console.log(`  ➜  Local:   http://localhost:${PORT}/`);
   });
 }

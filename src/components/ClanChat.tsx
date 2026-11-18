@@ -207,6 +207,22 @@ export const ClanChat: React.FC<ClanChatProps> = ({
               <p className="text-[11px] text-amber-50/90 mt-0.5 leading-relaxed break-words">
                 {msg.text}
               </p>
+              {msg.thumbnailDataUrl && (
+                <div className="mt-2 space-y-1">
+                  <img
+                    src={msg.thumbnailDataUrl}
+                    alt="分享的村庄等距视角缩略图"
+                    data-testid="clan-chat-shared-thumbnail"
+                    referrerPolicy="no-referrer"
+                    className="w-full rounded-lg border border-amber-500/60 object-cover aspect-[5/3] bg-[#1b3312]"
+                  />
+                  {msg.layoutSummary && (
+                    <div className="text-[10px] font-bold text-amber-200/80 tabular-nums">
+                      {msg.layoutSummary}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           );
         })}

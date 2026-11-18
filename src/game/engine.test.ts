@@ -2,19 +2,35 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   BUILDING_CATALOG,
+  CAMPAIGN_STAGES,
   createInitialVillage,
+  getTroopCombatDetails,
+  getTroopLevelStats,
   GRID_SIZE,
+  MAX_TROOP_LEVEL,
   TROOP_CATALOG,
 } from './catalog';
-import { canPlaceBuilding, gridToWorld, worldToGrid } from './isoMath';
+import { evaluateAttackStrategy } from './strategyLogic';
+import {
+  canPlaceBuilding,
+  createDefaultVillageCamera,
+  gridToWorld,
+  INITIAL_VILLAGE_CAMERA,
+  resetVillageCamera,
+  worldToGrid,
+  worldToScreen,
+} from './isoMath';
 import {
   applyEditLayoutToVillage,
   collectBuildingResource,
   createEditModeState,
+  deleteFavoriteArmyComposition,
   getBuildingProductionInfo,
   getEditPlacedBuildings,
   getResourceCaps,
   getStashedBuildingGroups,
+  getTroopLevel,
+  getTroopUpgradeInfo,
   getUsedClanSpace,
   getUsedSpellSpace,
   getUsedTroopSpace,
@@ -22,17 +38,23 @@ import {
   hasTrainingQueueEntries,
   hideAllBuildingsInEdit,
   hideBuildingInEdit,
+  MAX_FAVORITE_ARMIES,
   placeOrMoveBuildingInEdit,
+  queueFavoriteArmyComposition,
   repeatTrainingQueue,
   restoreAllBuildingsInEdit,
+  saveFavoriteArmyComposition,
   startPlaceNewBuilding,
   tickVillage,
   trainTroop,
+  upgradeTroop,
 } from './villageLogic';
 import {
   CLAN_REQUEST_COOLDOWN_MS,
   createInitialClanChatMessages,
   createSimulatedAllianceReply,
+  createSimulatedLayoutReply,
+  createVillageLayoutShareEntry,
   dismissClanReinforcement,
   formatDonationChatEntries,
   getClanRequestCooldownState,
@@ -40,14 +62,33 @@ import {
   requestClanReinforcements,
 } from './clanLogic';
 import {
+  buildVillageThumbnailFilename,
+  computeVillageLayoutStats,
+  computeVillageThumbnailFraming,
+  dataUrlToBlob,
+  formatVillageLayoutSummary,
+} from './villageThumbnailLogic';
+import {
+  buildBattleDeploymentCards,
   calculateBattleStars,
   createBattleState,
   createVFXPools,
   deployCardAt,
+  finalizeBattle,
   isValidDeployPoint,
+  projectFloatingDamageTexts,
   selectTargetForTroop,
   stepBattle,
 } from './battleLogic';
+import {
+  appendBattleReplay,
+  buildReplayFromBattle,
+  createReplayPlayback,
+  deleteBattleReplay,
+  MAX_SAVED_REPLAYS,
+  seekReplayPlayback,
+  stepReplayPlayback,
+} from './replayLogic';
 import {
   claimDailyMissionReward,
   ensureDailyMissions,
@@ -373,7 +414,13 @@ test('floating damage numbers spawn in VFXPools when buildings and units take da
 
   let sawBuildingDamage = false;
   let sawTroopDamage = false;
+  let sawYellowUnitDamage = false;
+  let sawProjectedOverlayAboveTarget = false;
   let observedRisePx = 0;
+
+  const cam = { x: 0, y: 0, zoom: 0.95 };
+  const cannonCenterWorld = gridToWorld(6.5, 6.5);
+  const cannonBaseScreenY = (cannonCenterWorld.y - cam.y) * cam.zoom + 900 / 2;
 
   for (let i = 0; i < 120; i++) {
     stepBattle(battle, 0.05, pools);
@@ -381,6 +428,9 @@ test('floating damage numbers spawn in VFXPools when buildings and units take da
       if (!t.active) continue;
       if (t.kind === 'damage_building' && /^-\d+$/.test(t.text)) {
         sawBuildingDamage = true;
+        if (t.color === '#fde047' || t.color === '#facc15') {
+          sawYellowUnitDamage = true;
+        }
       }
       if (t.kind === 'damage_troop' && /^-\d+$/.test(t.text)) {
         sawTroopDamage = true;
@@ -389,9 +439,18 @@ test('floating damage numbers spawn in VFXPools when buildings and units take da
         observedRisePx = t.risePx;
       }
     }
+
+    const projected = projectFloatingDamageTexts(pools, 1440, 900, cam);
+    for (const item of projected) {
+      if (item.kind === 'damage_building' && item.screenY < cannonBaseScreenY) {
+        sawProjectedOverlayAboveTarget = true;
+      }
+    }
   }
 
   assert.equal(sawBuildingDamage, true);
+  assert.equal(sawYellowUnitDamage, true);
+  assert.equal(sawProjectedOverlayAboveTarget, true);
   assert.equal(sawTroopDamage, true);
   assert.ok(observedRisePx > 0);
 });
@@ -941,3 +1000,595 @@ test('Village Edit Mode hides all buildings, validates drag-drop placement, and 
   }
 });
 
+test('battle replay logs deployment coordinates and timestamps, persists with saveStorage, and reproduces outcome deterministically', () => {
+  const baseVillage = createInitialVillage();
+  const armedVillage = {
+    ...baseVillage,
+    army: {
+      ...baseVillage.army,
+      barbarian: 8,
+      archer: 6,
+      giant: 2,
+    },
+    clanReinforcements: { barbarian: 2 },
+    spells: { ...baseVillage.spells, rage: 1, heal: 0 },
+  };
+  const livePools = createVFXPools();
+  const battle = createBattleState({
+    targetName: 'Replay Verification Base',
+    targetTH: 3,
+    isCampaign: false,
+    rewardGold: 1200,
+    rewardElixir: 900,
+    layout: [
+      { type: 'town_hall', level: 2, gx: 12, gy: 12 },
+      { type: 'cannon', level: 2, gx: 10, gy: 12 },
+      { type: 'gold_mine', level: 2, gx: 16, gy: 12 },
+    ],
+    playerVillage: armedVillage,
+  });
+
+  // Drop 1: Giant at t=0
+  battle.selectedCard = { kind: 'troop', type: 'giant' };
+  assert.equal(deployCardAt(battle, 7.5, 13.0, livePools).deployed, true);
+
+  // Step 1.5s, then drop Barbarians + Reinforcement + Rage Spell
+  for (let i = 0; i < 60; i++) stepBattle(battle, 0.025, livePools);
+  battle.selectedCard = { kind: 'troop', type: 'barbarian' };
+  assert.equal(deployCardAt(battle, 8.0, 12.0, livePools).deployed, true);
+  assert.equal(deployCardAt(battle, 8.25, 13.5, livePools).deployed, true);
+
+  for (let i = 0; i < 40; i++) stepBattle(battle, 0.025, livePools);
+  battle.selectedCard = { kind: 'reinforcement', type: 'barbarian' };
+  assert.equal(deployCardAt(battle, 8.5, 11.5, livePools).deployed, true);
+  battle.selectedCard = { kind: 'spell', type: 'rage' };
+  assert.equal(deployCardAt(battle, 10.5, 12.5, livePools).deployed, true);
+
+  // Run combat to completion
+  let guard = 0;
+  while (battle.phase !== 'ended' && guard < 4000) {
+    stepBattle(battle, 0.025, livePools);
+    guard += 1;
+  }
+  assert.equal(battle.phase, 'ended');
+  assert.ok(battle.result);
+
+  // Verify interaction log captured every deployment accurately
+  assert.equal(battle.replayEvents.length, 5);
+  assert.equal(battle.replayEvents[0].kind, 'troop');
+  assert.equal(battle.replayEvents[0].type, 'giant');
+  assert.equal(battle.replayEvents[0].timeSec, 0);
+  assert.equal(battle.replayEvents[0].gx, 7.5);
+  assert.equal(battle.replayEvents[0].gy, 13);
+  assert.equal(battle.replayEvents[3].kind, 'reinforcement');
+  assert.equal(battle.replayEvents[4].kind, 'spell');
+  assert.equal(battle.replayEvents[4].type, 'rage');
+  assert.ok(battle.replayEvents[4].timeSec > battle.replayEvents[0].timeSec);
+
+  const replay = buildReplayFromBattle(battle, 1_700_000_000_000);
+
+  // Persist replay via saveStorage and verify reload + delete + cap enforcement
+  const mem = new Map<string, string>();
+  const mockStorage: StorageLike = {
+    getItem: (k) => mem.get(k) ?? null,
+    setItem: (k, v) => {
+      mem.set(k, v);
+    },
+    removeItem: (k) => {
+      mem.delete(k);
+    },
+  };
+
+  const afterBattle = applyBattleResultToVillage(armedVillage, battle.result, undefined, replay);
+  assert.equal(afterBattle.battleReplays?.length, 1);
+  assert.equal(saveVillageToStorage(afterBattle, mockStorage), true);
+
+  const reloaded = loadSavedVillage(armedVillage.lastTickAt + 5000, mockStorage);
+  assert.equal(reloaded.village.battleReplays?.length, 1);
+  const loadedReplay = reloaded.village.battleReplays![0];
+  assert.equal(loadedReplay.events.length, 5);
+  assert.equal(loadedReplay.targetName, 'Replay Verification Base');
+
+  // Snapshot live village before playback to prove watching replay never mutates live village
+  const goldBeforeWatch = reloaded.village.gold;
+  const elixirBeforeWatch = reloaded.village.elixir;
+  const armyBeforeWatch = { ...reloaded.village.army };
+
+  // Reconstruct playback at 2x speed and simulate to finish
+  const playback = createReplayPlayback(loadedReplay, 2);
+  const replayPools = createVFXPools();
+  let replaySteps = 0;
+  while (!playback.finished && replaySteps < 4000) {
+    stepReplayPlayback(playback, 0.025, replayPools);
+    replaySteps += 1;
+  }
+
+  assert.equal(playback.finished, true);
+  assert.equal(playback.cursor, loadedReplay.events.length);
+  assert.equal(playback.battle.stars, battle.result.stars);
+  assert.equal(playback.battle.destructionPercent, battle.result.destructionPercent);
+  assert.equal(playback.battle.townHallDestroyed, battle.result.townHallDestroyed);
+  assert.equal(playback.battle.lootGold, battle.result.lootGold);
+  assert.equal(playback.battle.lootElixir, battle.result.lootElixir);
+  assert.deepEqual(playback.battle.troopsDeployed, battle.result.troopsDeployed);
+  assert.deepEqual(playback.battle.reinforcementsDeployed, battle.result.reinforcementsDeployed);
+  assert.deepEqual(playback.battle.spellsUsed, battle.result.spellsUsed);
+
+  // Timeline seek reproduces intermediate and final timestamps cleanly
+  const midSeek = seekReplayPlayback(loadedReplay, 2.0, 4, true);
+  assert.ok(midSeek.battle.elapsedSec >= 1.99);
+  assert.ok(midSeek.cursor >= 3);
+  assert.equal(midSeek.paused, true);
+  assert.equal(midSeek.speed, 4);
+
+  const endSeek = seekReplayPlayback(loadedReplay, loadedReplay.exactDurationSec + 5, 1, false);
+  assert.equal(endSeek.finished, true);
+  assert.equal(endSeek.battle.stars, battle.result.stars);
+
+  // Confirm live village remains completely untouched
+  assert.equal(reloaded.village.gold, goldBeforeWatch);
+  assert.equal(reloaded.village.elixir, elixirBeforeWatch);
+  assert.deepEqual(reloaded.village.army, armyBeforeWatch);
+
+  // Verify bounded replay list & deletion
+  let cappedList = afterBattle.battleReplays;
+  for (let i = 0; i < MAX_SAVED_REPLAYS + 4; i++) {
+    cappedList = appendBattleReplay(cappedList, {
+      ...replay,
+      id: `rep_extra_${i}`,
+    });
+  }
+  assert.equal(cappedList.length, MAX_SAVED_REPLAYS);
+  const afterDelete = deleteBattleReplay(afterBattle.battleReplays, replay.id);
+  assert.equal(afterDelete.length, 0);
+});
+
+test('early-ended battle replay terminates at recorded stop timestamp matching original metrics', () => {
+  const baseVillage = createInitialVillage();
+  const battle = createBattleState({
+    targetName: 'Early Retreat Base',
+    targetTH: 2,
+    isCampaign: true,
+    campaignStageId: 1,
+    rewardGold: 600,
+    rewardElixir: 600,
+    layout: [
+      { type: 'town_hall', level: 2, gx: 12, gy: 12 },
+      { type: 'gold_mine', level: 1, gx: 7, gy: 12 },
+    ],
+    playerVillage: baseVillage,
+  });
+
+  battle.selectedCard = { kind: 'troop', type: 'barbarian' };
+  deployCardAt(battle, 5.5, 12.0);
+  for (let i = 0; i < 40; i++) stepBattle(battle, 0.025); // +1.0s
+  finalizeBattle(battle, true);
+
+  const replay = buildReplayFromBattle(battle, 1_700_000_005_000);
+  assert.equal(replay.endedEarly, true);
+
+  const pb = createReplayPlayback(replay, 1);
+  let steps = 0;
+  while (!pb.finished && steps < 400) {
+    stepReplayPlayback(pb, 0.025);
+    steps += 1;
+  }
+  assert.equal(pb.finished, true);
+  assert.ok(Math.abs(pb.battle.elapsedSec - replay.exactDurationSec) < 0.05);
+  assert.equal(pb.battle.stars, replay.result.stars);
+  assert.equal(pb.battle.destructionPercent, replay.result.destructionPercent);
+});
+
+test('evaluateAttackStrategy evaluates player army composition against target level and recommends effective troops', () => {
+  const base = createInitialVillage();
+
+  // Empty army returns unready
+  const emptyVillage = {
+    ...base,
+    army: {
+      barbarian: 0,
+      archer: 0,
+      giant: 0,
+      goblin: 0,
+      wall_breaker: 0,
+      balloon: 0,
+    },
+  };
+  const stage1 = CAMPAIGN_STAGES[0];
+  const emptyEval = evaluateAttackStrategy(emptyVillage, {
+    name: stage1.name,
+    thLevel: stage1.recommendedTH,
+    buildings: stage1.buildings,
+  });
+  assert.equal(emptyEval.readiness, 'unready');
+  assert.equal(emptyEval.matchupScore, 0);
+  assert.ok(emptyEval.recommendedTroops.length >= 3);
+
+  // Initial TH2 army (8 Barbarian, 6 Archer, 2 Giant) vs Stage 1 (TH1, 0 Air Defense) -> favorable & Balloon top ground bypass
+  const stage1Eval = evaluateAttackStrategy(base, {
+    name: stage1.name,
+    thLevel: stage1.recommendedTH,
+    buildings: stage1.buildings,
+  });
+  assert.equal(stage1Eval.readiness, 'favorable');
+  assert.ok(stage1Eval.matchupScore >= 72);
+  const balloonRec1 = stage1Eval.recommendedTroops.find((r) => r.troopType === 'balloon')!;
+  const wallBreakerRec1 = stage1Eval.recommendedTroops.find((r) => r.troopType === 'wall_breaker')!;
+  assert.ok(balloonRec1.effectivenessScore > 85);
+  assert.ok(wallBreakerRec1.effectivenessScore < 50);
+
+  // Dense walled Stage 3 (wallBox >= 40 walls) -> Wall Breaker recommended heavily
+  const stage3 = CAMPAIGN_STAGES[2];
+  const stage3Eval = evaluateAttackStrategy(base, {
+    name: stage3.name,
+    thLevel: stage3.recommendedTH,
+    buildings: stage3.buildings,
+  });
+  const wallBreakerRec3 = stage3Eval.recommendedTroops.find((r) => r.troopType === 'wall_breaker')!;
+  assert.ok(wallBreakerRec3.effectivenessScore >= 85);
+  assert.ok(stage3Eval.defenseSummary.wallCount >= 16);
+
+  // TH2 initial army vs Stage 5 (TH5 with Mortar, Wizard Tower, Air Defense) -> risky matchup & warns about higher TH + missing tanks/spells if stripped
+  const stage5 = CAMPAIGN_STAGES[4];
+  const glassCannonArmy = {
+    ...base,
+    army: {
+      barbarian: 20,
+      archer: 0,
+      giant: 0,
+      goblin: 10,
+      wall_breaker: 0,
+      balloon: 0,
+    },
+    spells: { heal: 0, rage: 0 },
+  };
+  const stage5GlassEval = evaluateAttackStrategy(glassCannonArmy, {
+    name: stage5.name,
+    thLevel: stage5.recommendedTH,
+    buildings: stage5.buildings,
+  });
+  assert.equal(stage5GlassEval.readiness, 'risky');
+  assert.ok(stage5GlassEval.warnings.some((w) => w.includes('巨人') || w.includes('高于我方')));
+
+  // Balanced Giant + Archer + Wall Breaker army improves matchup score significantly on Stage 3
+  const balancedArmy = {
+    ...base,
+    townHallLevel: 3,
+    army: {
+      barbarian: 4,
+      archer: 10,
+      giant: 3,
+      goblin: 0,
+      wall_breaker: 2,
+      balloon: 0,
+    },
+    spells: { heal: 1, rage: 1 },
+  };
+  const stage3BalancedEval = evaluateAttackStrategy(balancedArmy, {
+    name: stage3.name,
+    thLevel: stage3.recommendedTH,
+    buildings: stage3.buildings,
+  });
+  assert.ok(stage3BalancedEval.matchupScore > stage3Eval.matchupScore);
+});
+
+test('Favorite Army Compositions save, persist, queue in one tap, enforce caps, and delete cleanly', () => {
+  const base = createInitialVillage();
+
+  // Reject blank name or empty army
+  const blankNameRes = saveFavoriteArmyComposition(base, '   ');
+  assert.equal(blankNameRes.ok, false);
+  const emptyArmyRes = saveFavoriteArmyComposition(base, 'Empty', { army: {}, spells: {} });
+  assert.equal(emptyArmyRes.ok, false);
+
+  // Save 'Giant-Healer' preset cleanly
+  const savedRes = saveFavoriteArmyComposition(
+    { ...base, elixir: 5000 },
+    'Giant-Healer',
+    { army: { giant: 2, archer: 10, barbarian: 4 }, spells: { heal: 1 } },
+    1_700_000_000_000
+  );
+  assert.equal(savedRes.ok, true);
+  if (!savedRes.ok) return;
+
+  assert.equal(savedRes.next.favoriteArmies?.length, 1);
+  assert.equal(savedRes.favorite.name, 'Giant-Healer');
+
+  // Persist through saveStorage
+  const mem = new Map<string, string>();
+  const mockStorage: StorageLike = {
+    getItem: (k) => mem.get(k) ?? null,
+    setItem: (k, v) => {
+      mem.set(k, v);
+    },
+    removeItem: (k) => {
+      mem.delete(k);
+    },
+  };
+  assert.equal(saveVillageToStorage(savedRes.next, mockStorage), true);
+  const reloaded = loadSavedVillage(savedRes.next.lastTickAt + 2000, mockStorage).village;
+  assert.equal(reloaded.favoriteArmies?.length, 1);
+  assert.equal(reloaded.favoriteArmies![0].name, 'Giant-Healer');
+
+  // Clear current army/spells (simulating post-battle empty camp) and one-tap queue
+  const postBattleEmpty = {
+    ...reloaded,
+    elixir: 5000,
+    army: {
+      barbarian: 0,
+      archer: 0,
+      giant: 0,
+      goblin: 0,
+      wall_breaker: 0,
+      balloon: 0,
+    },
+    spells: { heal: 0, rage: 0 },
+  };
+  const queued = queueFavoriteArmyComposition(
+    postBattleEmpty,
+    reloaded.favoriteArmies![0].id
+  );
+  assert.equal(queued.ok, true);
+  if (queued.ok) {
+    assert.equal(queued.favorite.name, 'Giant-Healer');
+    assert.equal(queued.next.army.giant, 2);
+    assert.equal(queued.next.army.archer, 10);
+    assert.equal(queued.next.army.barbarian, 4);
+    assert.equal(queued.next.spells.heal, 1);
+    assert.equal(queued.trainedTroopsCount, 16);
+    assert.equal(queued.brewedSpellsCount, 1);
+    assert.equal(getUsedTroopSpace(queued.next.army), 24);
+  }
+
+  // Replacing same name deduplicates cleanly, and max favorites cap holds at MAX_FAVORITE_ARMIES
+  let multi = savedRes.next;
+  for (let i = 0; i < MAX_FAVORITE_ARMIES + 3; i++) {
+    const r = saveFavoriteArmyComposition(
+      multi,
+      `Preset-${i}`,
+      { army: { barbarian: 5 }, spells: {} },
+      1_700_000_001_000 + i
+    );
+    assert.equal(r.ok, true);
+    if (r.ok) multi = r.next;
+  }
+  assert.equal(multi.favoriteArmies?.length, MAX_FAVORITE_ARMIES);
+
+  // Delete favorite removes target entry
+  const targetId = multi.favoriteArmies![0].id;
+  const afterDelete = deleteFavoriteArmyComposition(multi, targetId);
+  assert.equal(afterDelete.favoriteArmies?.length, MAX_FAVORITE_ARMIES - 1);
+  assert.equal(afterDelete.favoriteArmies?.some((f) => f.id === targetId), false);
+});
+
+test('Village isometric thumbnail framing, layout stats, and clan chat sharing behave accurately', () => {
+  const village = createInitialVillage();
+
+  // Isometric 28x28 clearing diamond fits cleanly inside thumbnail framing with positive zoom
+  const framing = computeVillageThumbnailFraming(800, 480);
+  assert.equal(framing.width, 800);
+  assert.equal(framing.height, 480);
+  assert.ok(framing.camera.zoom > 0.3 && framing.camera.zoom < 1.0);
+  assert.equal(framing.camera.x, 0);
+
+  // Corner tiles must project inside the 800x480 thumbnail bounds
+  const corners = [
+    gridToWorld(0, 0),
+    gridToWorld(GRID_SIZE, 0),
+    gridToWorld(GRID_SIZE, GRID_SIZE),
+    gridToWorld(0, GRID_SIZE),
+  ];
+  for (const w of corners) {
+    const sx = (w.x - framing.camera.x) * framing.camera.zoom + framing.width / 2;
+    const sy = (w.y - framing.camera.y) * framing.camera.zoom + framing.height / 2;
+    assert.ok(sx >= 0 && sx <= framing.width, `corner sx=${sx} within [0, ${framing.width}]`);
+    assert.ok(sy >= 0 && sy <= framing.height, `corner sy=${sy} within [0, ${framing.height}]`);
+  }
+
+  // Layout stats match initial village + reflect added walls/defenses
+  const stats = computeVillageLayoutStats(village);
+  assert.equal(stats.townHallLevel, village.townHallLevel);
+  assert.equal(stats.totalBuildings, village.buildings.length);
+  assert.ok(stats.defensesCount >= 2);
+  assert.ok(stats.wallsCount >= 8);
+  const summary = formatVillageLayoutSummary(stats);
+  assert.ok(summary.includes(`大本营 Lv.${village.townHallLevel}`));
+  assert.ok(buildVillageThumbnailFilename(village).endsWith('.png'));
+
+  // Sharing layout thumbnail into clan chat attaches thumbnailDataUrl and triggers contextual feedback
+  const fakeDataUrl = 'data:image/png;base64,iVBORw0KGgo=';
+  const blob = dataUrlToBlob(fakeDataUrl);
+  assert.equal(blob.type, 'image/png');
+  assert.equal(blob.size, 8);
+  const shareEntry = createVillageLayoutShareEntry(
+    village,
+    fakeDataUrl,
+    summary,
+    '新摆的护本阵型，大家看看',
+    1_700_000_005_000
+  );
+  assert.equal(shareEntry.isOwn, true);
+  assert.equal(shareEntry.thumbnailDataUrl, fakeDataUrl);
+  assert.equal(shareEntry.layoutSummary, summary);
+  assert.equal(shareEntry.text, '新摆的护本阵型，大家看看');
+
+  const reply = createSimulatedLayoutReply(village.clanName, village, 1_700_000_006_000);
+  assert.equal(reply.kind, 'chat');
+  assert.ok(reply.text.length > 10);
+});
+
+test('buildBattleDeploymentCards orders troops, reinforcements, and spells with accurate selection and depleted states', () => {
+  const stage = CAMPAIGN_STAGES[0];
+  const village = createInitialVillage();
+  village.clanReinforcements = { balloon: 1 };
+  const battle = createBattleState({
+    targetName: stage.name,
+    targetTH: stage.recommendedTH,
+    isCampaign: true,
+    campaignStageId: stage.id,
+    rewardGold: stage.rewardGold,
+    rewardElixir: stage.rewardElixir,
+    layout: stage.buildings,
+    playerVillage: village,
+  });
+
+  // Deplete archers after deploying one so the slot remains visible as depleted
+  battle.availableTroops.archer = 0;
+  battle.troopsDeployed.archer = 1;
+  battle.selectedCard = { kind: 'spell', type: 'heal' };
+
+  const cards = buildBattleDeploymentCards(battle);
+  assert.deepEqual(
+    cards.map((c) => `${c.card.kind}:${c.card.type}:${c.keyLabel}`),
+    [
+      'troop:barbarian:1',
+      'troop:archer:2',
+      'troop:giant:3',
+      'reinforcement:balloon:4',
+      'spell:heal:5',
+      'spell:rage:6',
+    ]
+  );
+
+  const archerCard = cards.find((c) => c.card.kind === 'troop' && c.card.type === 'archer')!;
+  assert.equal(archerCard.depleted, true);
+  assert.equal(archerCard.count, 0);
+  assert.equal(archerCard.isSelected, false);
+
+  const reinforcementCard = cards.find((c) => c.card.kind === 'reinforcement')!;
+  assert.equal(reinforcementCard.isReinforcement, true);
+  assert.equal(reinforcementCard.count, 1);
+
+  const healCard = cards.find((c) => c.card.kind === 'spell' && c.card.type === 'heal')!;
+  assert.equal(healCard.isSelected, true);
+  assert.equal(healCard.depleted, false);
+});
+
+test('Troop level display, upgrade eligibility, stat scaling, and battle/replay propagation work accurately', () => {
+  const village = createInitialVillage();
+
+  // Starter village has TH Lv.2, Barracks Lv.2, Elixir 1800 -> Barbarian can upgrade Lv.1 -> Lv.2
+  assert.equal(getTroopLevel(village, 'barbarian'), 1);
+  const barbInfo = getTroopUpgradeInfo(village, 'barbarian');
+  assert.equal(barbInfo.unlocked, true);
+  assert.equal(barbInfo.canUpgrade, true);
+  assert.equal(barbInfo.currentStats.hp, TROOP_CATALOG.barbarian.hp);
+  assert.equal(barbInfo.currentStats.dps, TROOP_CATALOG.barbarian.dps);
+
+  // Locked troop (wall_breaker requires Barracks Lv.3) cannot upgrade
+  const wbInfo = getTroopUpgradeInfo(village, 'wall_breaker');
+  assert.equal(wbInfo.unlocked, false);
+  assert.equal(wbInfo.canUpgrade, false);
+  const lockedUpgrade = upgradeTroop(village, 'wall_breaker');
+  assert.equal(lockedUpgrade.ok, false);
+
+  // Giant (2300 elixir cost vs 1800 starting elixir) reports insufficient elixir
+  const giantInfo = getTroopUpgradeInfo(village, 'giant');
+  assert.equal(giantInfo.unlocked, true);
+  assert.equal(giantInfo.canUpgrade, false);
+  assert.equal(giantInfo.meetsElixir, false);
+
+  // Upgrade Barbarian Lv.1 -> Lv.2
+  const upgRes = upgradeTroop(village, 'barbarian');
+  assert.equal(upgRes.ok, true);
+  if (!upgRes.ok) return;
+  assert.equal(upgRes.previousLevel, 1);
+  assert.equal(upgRes.newLevel, 2);
+  assert.equal(getTroopLevel(upgRes.next, 'barbarian'), 2);
+  assert.equal(upgRes.next.elixir, village.elixir - barbInfo.elixirCost);
+  assert.ok(upgRes.hpGain > 0);
+  assert.ok(upgRes.dpsGain > 0);
+
+  const lv2Stats = getTroopLevelStats('barbarian', 2);
+  assert.equal(lv2Stats.hp, Math.round(TROOP_CATALOG.barbarian.hp * 1.2));
+  assert.equal(lv2Stats.dps, Math.round(TROOP_CATALOG.barbarian.dps * 1.2));
+
+  // Cannot upgrade Barbarian to Lv.3 while TH & Barracks are Lv.2
+  const lv3Block = getTroopUpgradeInfo(upgRes.next, 'barbarian');
+  assert.equal(lv3Block.canUpgrade, false);
+  assert.equal(lv3Block.meetsTownHall, false);
+
+  // Max level cap prevents further upgrade
+  const maxedVillage = {
+    ...upgRes.next,
+    townHallLevel: 5,
+    elixir: 99999,
+    troopLevels: { ...upgRes.next.troopLevels, barbarian: MAX_TROOP_LEVEL },
+  };
+  const maxInfo = getTroopUpgradeInfo(maxedVillage, 'barbarian');
+  assert.equal(maxInfo.isMaxLevel, true);
+  assert.equal(maxInfo.canUpgrade, false);
+  assert.equal(upgradeTroop(maxedVillage, 'barbarian').ok, false);
+
+  // Battle spawns upgraded Barbarian with Lv.2 HP & saves initialTroopLevels in replay
+  const stage = CAMPAIGN_STAGES[0];
+  const battle = createBattleState({
+    targetName: stage.name,
+    targetTH: stage.recommendedTH,
+    isCampaign: true,
+    campaignStageId: stage.id,
+    rewardGold: stage.rewardGold,
+    rewardElixir: stage.rewardElixir,
+    layout: stage.buildings,
+    playerVillage: upgRes.next,
+  });
+  battle.selectedCard = { kind: 'troop', type: 'barbarian' };
+  const dep = deployCardAt(battle, 2, 2);
+  assert.equal(dep.deployed, true);
+  assert.equal(battle.troops[0].level, 2);
+  assert.equal(battle.troops[0].maxHp, lv2Stats.hp);
+
+  const replay = buildReplayFromBattle(battle, 1_700_000_010_000);
+  assert.equal(replay.initialTroopLevels?.barbarian, 2);
+  const playback = createReplayPlayback(replay, 1);
+  assert.equal(playback.battle.troopLevels.barbarian, 2);
+
+  // Detailed combat info reports damage type, splash radius, and target preference accurately
+  const barbDetails = getTroopCombatDetails('barbarian', 2);
+  assert.equal(barbDetails.damageType, '单体近战');
+  assert.equal(barbDetails.damageRadius, '单体（无溅射）');
+  assert.equal(barbDetails.targetPreference, '任意目标');
+  assert.equal(barbDetails.damagePerHit, lv2Stats.damagePerHit);
+
+  const archerDetails = getTroopCombatDetails('archer', 1);
+  assert.equal(archerDetails.damageType, '单体远程');
+
+  const giantDetails = getTroopCombatDetails('giant', 1);
+  assert.equal(giantDetails.targetPreference, '防御建筑');
+
+  const balloonDetails = getTroopCombatDetails('balloon', 1);
+  assert.equal(balloonDetails.damageType, '范围溅射');
+  assert.equal(balloonDetails.damageRadius, '1.3 格溅射');
+  assert.equal(balloonDetails.unitDomain, '空中单位');
+});
+
+test('resetVillageCamera resets panned and zoomed coordinates to (0, 0) with initial zoom and re-centers Town Hall', () => {
+  const cam = createDefaultVillageCamera();
+  assert.deepEqual(cam, INITIAL_VILLAGE_CAMERA);
+  assert.equal(cam.x, 0);
+  assert.equal(cam.y, 0);
+  assert.equal(cam.zoom, 1.05);
+
+  // Simulate player panning far away and zooming out
+  cam.x = 340;
+  cam.y = -210;
+  cam.zoom = 0.6;
+
+  // Town Hall center at grid (14, 14) should be off-center while panned
+  const thCenterWorld = gridToWorld(14, 14);
+  const offCenterScreen = worldToScreen(thCenterWorld.x, thCenterWorld.y, 1440, 900, cam);
+  assert.notEqual(Math.round(offCenterScreen.x), 720);
+  assert.notEqual(Math.round(offCenterScreen.y), 450);
+
+  // Resetting camera restores (0, 0) and initial zoom 1.05
+  const resetResult = resetVillageCamera(cam);
+  assert.equal(resetResult, cam);
+  assert.equal(cam.x, 0);
+  assert.equal(cam.y, 0);
+  assert.equal(cam.zoom, 1.05);
+
+  // Town Hall center projects directly to viewport center (720, 450)
+  const centeredScreen = worldToScreen(thCenterWorld.x, thCenterWorld.y, 1440, 900, cam);
+  assert.equal(centeredScreen.x, 720);
+  assert.equal(centeredScreen.y, 450);
+});

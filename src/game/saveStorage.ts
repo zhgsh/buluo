@@ -4,7 +4,8 @@ import {
   getLocalDateKey,
   recordMissionProgress,
 } from './dailyMissions';
-import type { BattleResult, TroopType, VillageState } from './types';
+import { appendBattleReplay } from './replayLogic';
+import type { BattleReplay, BattleResult, TroopType, VillageState } from './types';
 import {
   cloneTrainingQueue,
   getResourceCaps,
@@ -92,8 +93,23 @@ export function loadSavedVillage(
         const parsed = JSON.parse(raw) as VillageState;
         if (parsed && Array.isArray(parsed.buildings) && parsed.buildings.length > 0) {
           const { next: caughtUp } = tickVillage(parsed, nowMs);
+          const defaultLevels: Record<TroopType, number> = {
+            barbarian: 1,
+            archer: 1,
+            giant: 1,
+            goblin: 1,
+            wall_breaker: 1,
+            balloon: 1,
+          };
+          const normalizedLevels: Partial<Record<TroopType, number>> = {
+            ...defaultLevels,
+            ...(caughtUp.troopLevels ?? {}),
+          };
           return {
-            village: ensureDailyMissions(caughtUp, dateKey),
+            village: ensureDailyMissions(
+              { ...caughtUp, troopLevels: normalizedLevels },
+              dateKey
+            ),
             hasSave: true,
           };
         }
@@ -111,7 +127,8 @@ export function loadSavedVillage(
 export function applyBattleResultToVillage(
   cur: VillageState,
   r: BattleResult,
-  dateKey = getLocalDateKey()
+  dateKey = getLocalDateKey(),
+  replay?: BattleReplay
 ): VillageState {
   const caps = getResourceCaps(cur);
 
@@ -167,6 +184,9 @@ export function applyBattleResultToVillage(
       lastTrainingQueue: hasTrainingQueueEntries(battleQueue)
         ? battleQueue
         : cur.lastTrainingQueue,
+      battleReplays: replay
+        ? appendBattleReplay(cur.battleReplays, replay)
+        : cur.battleReplays,
     },
     dateKey
   );

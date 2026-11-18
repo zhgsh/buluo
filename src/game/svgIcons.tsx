@@ -92,7 +92,7 @@ export const StarIcon: React.FC<{ filled: boolean; className?: string }> = ({
 );
 
 export const ClashCrestLogo: React.FC<{ className?: string }> = ({ className = 'w-64 h-auto' }) => (
-  <svg viewBox="0 0 420 145" className={className} role="img" aria-label="部落冲突">
+  <svg viewBox="0 0 420 145" className={className} role="img" aria-label="天启崛起">
     {/* Crossed Swords behind shield */}
     <g stroke="#1c130b" strokeWidth="3" strokeLinejoin="round">
       <path d="M44 108 L112 36 L122 46 L54 118 Z" fill="#e2e8f0" />
@@ -126,7 +126,7 @@ export const ClashCrestLogo: React.FC<{ className?: string }> = ({ className = '
       fontSize="54"
       letterSpacing="3"
     >
-      部落冲突
+      天启崛起
     </text>
     <text
       x="147"
@@ -140,7 +140,7 @@ export const ClashCrestLogo: React.FC<{ className?: string }> = ({ className = '
       fontSize="16"
       letterSpacing="4"
     >
-      CLASH OF REALMS
+      APOCALYPSE RISING
     </text>
   </svg>
 );

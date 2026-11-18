@@ -95,6 +95,14 @@ export interface TrainingQueueSnapshot {
   spells: Partial<Record<SpellType, number>>;
 }
 
+export interface FavoriteArmyComposition {
+  id: string;
+  name: string;
+  army: Partial<Record<TroopType, number>>;
+  spells: Partial<Record<SpellType, number>>;
+  createdAtMs: number;
+}
+
 export type DailyMissionKind =
   | 'collect_elixir'
   | 'collect_gold'
@@ -120,6 +128,42 @@ export interface DailyMissionsState {
   missions: DailyMission[];
 }
 
+export interface BattleLayoutItem {
+  type: BuildingType;
+  level: number;
+  gx: number;
+  gy: number;
+}
+
+export interface BattleReplayEvent {
+  seq: number;
+  timeSec: number;
+  kind: 'troop' | 'reinforcement' | 'spell';
+  type: TroopType | SpellType;
+  gx: number;
+  gy: number;
+}
+
+export interface BattleReplay {
+  id: string;
+  recordedAtMs: number;
+  targetName: string;
+  targetTH: number;
+  isCampaign: boolean;
+  campaignStageId?: number;
+  rewardGold: number;
+  rewardElixir: number;
+  exactDurationSec: number;
+  endedEarly: boolean;
+  layout: BattleLayoutItem[];
+  initialTroops: Record<TroopType, number>;
+  initialReinforcements: Partial<Record<TroopType, number>>;
+  initialSpells: Record<SpellType, number>;
+  initialTroopLevels?: Partial<Record<TroopType, number>>;
+  events: BattleReplayEvent[];
+  result: BattleResult;
+}
+
 export interface VillageState {
   townHallLevel: number;
   gold: number;
@@ -130,14 +174,17 @@ export interface VillageState {
   buildersTotal: number;
   buildings: PlacedBuilding[];
   army: Record<TroopType, number>;
+  troopLevels?: Partial<Record<TroopType, number>>;
   spells: Record<SpellType, number>;
   clanName?: string;
   clanReinforcements?: Partial<Record<TroopType, number>>;
   clanLastRequestAt?: number;
   lastTrainingQueue?: TrainingQueueSnapshot;
+  favoriteArmies?: FavoriteArmyComposition[];
   clearedCampaignStages: number[]; // stage indices
   campaignStars: Record<number, number>; // stageId -> 0..3
   dailyMissions?: DailyMissionsState;
+  battleReplays?: BattleReplay[];
   lastTickAt: number;
 }
 
@@ -231,6 +278,7 @@ export interface BattleTroop {
   rageTimer: number;
   healTimer: number;
   isReinforcement?: boolean;
+  level?: number;
 }
 
 export interface BattleProjectile {
@@ -328,6 +376,7 @@ export interface BattleState {
   availableTroops: Record<TroopType, number>;
   availableReinforcements: Partial<Record<TroopType, number>>;
   availableSpells: Record<SpellType, number>;
+  troopLevels: Record<TroopType, number>;
   troopsDeployed: Partial<Record<TroopType, number>>;
   reinforcementsDeployed: Partial<Record<TroopType, number>>;
   spellsUsed: Partial<Record<SpellType, number>>;
@@ -346,5 +395,12 @@ export interface BattleState {
   hitstopTimer: number;
   cameraTrauma: number;
   endBeatTimer: number;
+  initialLayout: BattleLayoutItem[];
+  initialTroops: Record<TroopType, number>;
+  initialReinforcements: Partial<Record<TroopType, number>>;
+  initialSpells: Record<SpellType, number>;
+  replayEvents: BattleReplayEvent[];
+  nextEntitySeq: number;
+  endedEarly?: boolean;
   result?: BattleResult;
 }

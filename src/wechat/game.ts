@@ -80,7 +80,7 @@ function bootstrapWechatMiniGame(): void {
     wxApi.onShareAppMessage(() => {
       const s = app.getStateSummary();
       return {
-        title: `我在《部落冲突》微信小游戏建成了 ${s.village.townHallLevel} 级大本营，奖杯 ${s.village.trophies}！`,
+        title: `我在《天启崛起》微信小游戏建成了 ${s.village.townHallLevel} 级大本营，奖杯 ${s.village.trophies}！`,
       };
     });
   }

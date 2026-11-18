@@ -11,6 +11,27 @@ export interface CameraState {
   zoom: number;
 }
 
+export const INITIAL_VILLAGE_CAMERA: Readonly<CameraState> = {
+  x: 0,
+  y: 0,
+  zoom: 1.05,
+};
+
+export function createDefaultVillageCamera(): CameraState {
+  return {
+    x: INITIAL_VILLAGE_CAMERA.x,
+    y: INITIAL_VILLAGE_CAMERA.y,
+    zoom: INITIAL_VILLAGE_CAMERA.zoom,
+  };
+}
+
+export function resetVillageCamera(camera: CameraState): CameraState {
+  camera.x = INITIAL_VILLAGE_CAMERA.x;
+  camera.y = INITIAL_VILLAGE_CAMERA.y;
+  camera.zoom = INITIAL_VILLAGE_CAMERA.zoom;
+  return camera;
+}
+
 /**
  * Converts continuous grid coordinates (gx, gy) to isometric world coordinates (wx, wy).
  * Grid origin (0, 0) is at top corner; (GRID_SIZE, GRID_SIZE) is at bottom corner.

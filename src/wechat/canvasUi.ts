@@ -327,7 +327,7 @@ function renderTitleOverlay(
 
   ctx.fillStyle = '#fef3c7';
   ctx.font = 'bold 26px sans-serif';
-  ctx.fillText('部落冲突', x + 22, y + 42);
+  ctx.fillText('天启崛起', x + 22, y + 42);
 
   ctx.fillStyle = '#d6b48c';
   ctx.font = '12px sans-serif';

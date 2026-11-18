@@ -6,22 +6,39 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AttackSelectorModal } from './components/AttackSelectorModal';
 import { BarracksModal } from './components/BarracksModal';
 import { BattleHUD } from './components/BattleHUD';
+import { BattleReplayHUD } from './components/BattleReplayHUD';
 import { BattleResultModal } from './components/BattleResultModal';
 import { ClanCastleModal } from './components/ClanCastleModal';
 import { ClanChat } from './components/ClanChat';
 import { DailyMissionsModal } from './components/DailyMissionsModal';
 import { PauseModal } from './components/PauseModal';
+import { ReplayListModal } from './components/ReplayListModal';
 import { SettingsModal } from './components/SettingsModal';
 import { ShopModal } from './components/ShopModal';
 import { TitleScreen } from './components/TitleScreen';
 import { VillageEditBar } from './components/VillageEditBar';
 import { VillageHUD } from './components/VillageHUD';
+import { VillageThumbnailModal } from './components/VillageThumbnailModal';
 import { WechatPublishModal } from './components/WechatPublishModal';
+import {
+  type GeneratedVillageThumbnail,
+  generateVillageThumbnailDataUrl,
+} from './game/villageThumbnailRenderer';
+import {
+  buildReplayFromBattle,
+  createReplayPlayback,
+  deleteBattleReplay,
+  seekReplayPlayback,
+  stepReplayPlayback,
+  type ReplayPlaybackState,
+} from './game/replayLogic';
 import {
   createVFXPools,
   createBattleState,
   deployCardAt,
   finalizeBattle,
+  type FloatingDamageOverlayItem,
+  projectFloatingDamageTexts,
   stepBattle,
 } from './game/battleLogic';
 import { renderBattleCanvas, renderVillageCanvas } from './game/canvasRenderer';
@@ -35,11 +52,13 @@ import {
 } from './game/catalog';
 import {
   CameraState,
+  resetVillageCamera,
   screenToWorld,
   worldToGrid,
 } from './game/isoMath';
 import { resolveBgmTrack, sound } from './game/sound';
 import type {
+  BattleReplay,
   BattleState,
   BuildingType,
   CampaignStage,
@@ -57,6 +76,7 @@ import {
   cloneTrainingQueue,
   collectBuildingResource,
   createEditModeState,
+  deleteFavoriteArmyComposition,
   dismissSpell,
   dismissTroop,
   finishUpgradeWithGems,
@@ -64,12 +84,15 @@ import {
   hideBuildingInEdit,
   moveBuilding,
   placeOrMoveBuildingInEdit,
+  queueFavoriteArmyComposition,
   repeatTrainingQueue,
   restoreAllBuildingsInEdit,
+  saveFavoriteArmyComposition,
   startPlaceNewBuilding,
   startUpgradeBuilding,
   tickVillage,
   trainTroop,
+  upgradeTroop,
 } from './game/villageLogic';
 
 import {
@@ -84,6 +107,8 @@ import {
   type ReinforcementPreference,
   createInitialClanChatMessages,
   createSimulatedAllianceReply,
+  createSimulatedLayoutReply,
+  createVillageLayoutShareEntry,
   dismissClanReinforcement,
   formatDonationChatEntries,
   joinSimulatedAlliance,
@@ -121,9 +146,11 @@ export default function App() {
   const [unreadClanMessages, setUnreadClanMessages] = useState<number>(2);
   const [recentDonations, setRecentDonations] = useState<ClanDonationEvent[]>([]);
   const [missionsOpen, setMissionsOpen] = useState(false);
+  const [replaysOpen, setReplaysOpen] = useState(false);
   const [attackOpen, setAttackOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [wechatPublishOpen, setWechatPublishOpen] = useState(false);
+  const [thumbnailPreview, setThumbnailPreview] = useState<GeneratedVillageThumbnail | null>(null);
   const [selectedBuildingId, setSelectedBuildingId] = useState<string | null>(null);
   const [placingType, setPlacingType] = useState<BuildingType | null>(null);
   const [movingBuildingId, setMovingBuildingId] = useState<string | null>(null);
@@ -131,8 +158,12 @@ export default function App() {
   const [editDraggingId, setEditDraggingId] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // Battle snapshot for React HUD (updated at discrete changes or ~10Hz)
+  // Battle & Replay snapshots for React HUD
   const [battleHudSnapshot, setBattleHudSnapshot] = useState<BattleState | null>(null);
+  const [replayHudSnapshot, setReplayHudSnapshot] = useState<ReplayPlaybackState | null>(null);
+  const [lastRecordedReplay, setLastRecordedReplay] = useState<BattleReplay | null>(null);
+  const [showFloatingDamage, setShowFloatingDamage] = useState<boolean>(true);
+  const [floatingDamageItems, setFloatingDamageItems] = useState<FloatingDamageOverlayItem[]>([]);
 
   // Mutable simulation refs for 60fps Canvas loop
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -141,9 +172,12 @@ export default function App() {
   const modeRef = useRef<PlayMode>(mode);
   const villageRef = useRef<VillageState>(village);
   const battleRef = useRef<BattleState | null>(null);
+  const replayPlaybackRef = useRef<ReplayPlaybackState | null>(null);
   const battleResultAppliedRef = useRef<boolean>(false);
   const skipNextAutoSaveRef = useRef<boolean>(false);
   const poolsRef = useRef(createVFXPools());
+  const showFloatingDamageRef = useRef<boolean>(showFloatingDamage);
+  const hadFloatingDamagesRef = useRef<boolean>(false);
   const barracksSessionQueueRef = useRef<TrainingQueueSnapshot>({ army: {}, spells: {} });
   const cameraRef = useRef<CameraState>({ x: 0, y: 0, zoom: 1.05 });
   const keysHeldRef = useRef<Set<string>>(new Set());
@@ -196,6 +230,10 @@ export default function App() {
   }, [village]);
 
   useEffect(() => {
+    showFloatingDamageRef.current = showFloatingDamage;
+  }, [showFloatingDamage]);
+
+  useEffect(() => {
     clanChatOpenRef.current = clanChatOpen;
     if (clanChatOpen) {
       setUnreadClanMessages(0);
@@ -234,10 +272,18 @@ export default function App() {
   }, []);
 
   const commitFinishedBattleResult = useCallback(() => {
+    if (replayPlaybackRef.current) return;
     const battle = battleRef.current;
     if (!battle?.result || battleResultAppliedRef.current) return;
     battleResultAppliedRef.current = true;
-    const updated = applyBattleResultToVillage(villageRef.current, battle.result);
+    const replay = buildReplayFromBattle(battle, Date.now());
+    setLastRecordedReplay(replay);
+    const updated = applyBattleResultToVillage(
+      villageRef.current,
+      battle.result,
+      undefined,
+      replay
+    );
     villageRef.current = updated;
     setVillage(updated);
     saveVillageToStorage(updated);
@@ -346,6 +392,26 @@ export default function App() {
     }
   }, []);
 
+  const syncReplaySnapshot = useCallback(() => {
+    const pb = replayPlaybackRef.current;
+    if (pb) {
+      setReplayHudSnapshot({
+        ...pb,
+        battle: {
+          ...pb.battle,
+          availableTroops: { ...pb.battle.availableTroops },
+          availableReinforcements: { ...pb.battle.availableReinforcements },
+          availableSpells: { ...pb.battle.availableSpells },
+          troopsDeployed: { ...pb.battle.troopsDeployed },
+          reinforcementsDeployed: { ...pb.battle.reinforcementsDeployed },
+          spellsUsed: { ...pb.battle.spellsUsed },
+        },
+      });
+    } else {
+      setReplayHudSnapshot(null);
+    }
+  }, []);
+
   const handleStartFromTitle = useCallback(() => {
     sound.unlockAudio();
     sound.playClick();
@@ -380,6 +446,10 @@ export default function App() {
       setSettingsOpen(false);
       return;
     }
+    if (thumbnailPreview) {
+      setThumbnailPreview(null);
+      return;
+    }
     if (shopOpen) {
       setShopOpen(false);
       return;
@@ -398,6 +468,10 @@ export default function App() {
     }
     if (missionsOpen) {
       setMissionsOpen(false);
+      return;
+    }
+    if (replaysOpen) {
+      setReplaysOpen(false);
       return;
     }
     if (attackOpen) {
@@ -425,11 +499,13 @@ export default function App() {
   }, [
     wechatPublishOpen,
     settingsOpen,
+    thumbnailPreview,
     shopOpen,
     barracksOpen,
     clanCastleOpen,
     clanChatOpen,
     missionsOpen,
+    replaysOpen,
     attackOpen,
   ]);
 
@@ -461,6 +537,21 @@ export default function App() {
         return;
       }
 
+      if (e.key === ' ' && screenRef.current === 'playing' && modeRef.current === 'battle' && replayPlaybackRef.current) {
+        e.preventDefault();
+        if (replayPlaybackRef.current.finished) {
+          poolsRef.current = createVFXPools();
+          replayPlaybackRef.current = createReplayPlayback(
+            replayPlaybackRef.current.replay,
+            replayPlaybackRef.current.speed
+          );
+        } else {
+          replayPlaybackRef.current.paused = !replayPlaybackRef.current.paused;
+        }
+        syncReplaySnapshot();
+        return;
+      }
+
       if (e.key === 'Escape' || k === 'p') {
         if (screenRef.current === 'playing' || screenRef.current === 'paused') {
           e.preventDefault();
@@ -471,6 +562,7 @@ export default function App() {
       } else if (
         screenRef.current === 'playing' &&
         modeRef.current === 'battle' &&
+        !replayPlaybackRef.current &&
         battleRef.current &&
         /^[1-9]$/.test(e.key)
       ) {
@@ -522,7 +614,7 @@ export default function App() {
       window.removeEventListener('blur', clearInputs);
       document.removeEventListener('visibilitychange', clearInputs);
     };
-  }, [handlePauseToggle, handleToggleMute, syncBattleSnapshot]);
+  }, [handlePauseToggle, handleToggleMute, syncBattleSnapshot, syncReplaySnapshot]);
 
   // Main 60fps simulation + Canvas render loop
   useEffect(() => {
@@ -556,6 +648,7 @@ export default function App() {
     let cancelled = false;
     let lastTime = performance.now();
     let hudAccumulator = 0;
+    let replayHudAccumulator = 0;
 
     const loop = (nowPerf: number) => {
       if (cancelled) return;
@@ -586,7 +679,25 @@ export default function App() {
         }
 
         // Advance simulation
-        if (modeRef.current === 'battle' && battleRef.current) {
+        if (modeRef.current === 'battle' && replayPlaybackRef.current) {
+          const pb = replayPlaybackRef.current;
+          const prevFinished = pb.finished;
+          const prevStars = pb.battle.stars;
+          const prevPct = pb.battle.destructionPercent;
+          const prevCursor = pb.cursor;
+          stepReplayPlayback(pb, dt, poolsRef.current);
+          replayHudAccumulator += dt;
+          if (
+            pb.finished !== prevFinished ||
+            pb.battle.stars !== prevStars ||
+            pb.battle.destructionPercent !== prevPct ||
+            pb.cursor !== prevCursor ||
+            replayHudAccumulator >= 0.12
+          ) {
+            replayHudAccumulator = 0;
+            syncReplaySnapshot();
+          }
+        } else if (modeRef.current === 'battle' && battleRef.current) {
           const prevPhase = battleRef.current.phase;
           const prevStars = battleRef.current.stars;
           const prevPct = battleRef.current.destructionPercent;
@@ -621,14 +732,36 @@ export default function App() {
               const first = completedUpgrades[0];
               showToast(`${BUILDING_CATALOG[first.type].name} 升级至 Lv.${first.level} 完成！`);
             }
-          } else if (modeRef.current === 'battle' && battleRef.current) {
+          } else if (modeRef.current === 'battle' && !replayPlaybackRef.current && battleRef.current) {
             syncBattleSnapshot();
           }
         }
       }
 
       // Render active scene
-      if (modeRef.current === 'battle' && battleRef.current && screenRef.current !== 'title') {
+      if (modeRef.current === 'battle' && replayPlaybackRef.current && screenRef.current !== 'title') {
+        if (hadFloatingDamagesRef.current) {
+          hadFloatingDamagesRef.current = false;
+          setFloatingDamageItems([]);
+        }
+        renderBattleCanvas(
+          ctx,
+          width,
+          height,
+          cameraRef.current,
+          replayPlaybackRef.current.battle,
+          poolsRef.current,
+          nowEpoch,
+          null
+        );
+      } else if (modeRef.current === 'battle' && battleRef.current && screenRef.current !== 'title') {
+        const projected = showFloatingDamageRef.current
+          ? projectFloatingDamageTexts(poolsRef.current, width, height, cameraRef.current)
+          : [];
+        if (projected.length > 0 || hadFloatingDamagesRef.current) {
+          hadFloatingDamagesRef.current = projected.length > 0;
+          setFloatingDamageItems(projected);
+        }
         renderBattleCanvas(
           ctx,
           width,
@@ -637,9 +770,14 @@ export default function App() {
           battleRef.current,
           poolsRef.current,
           nowEpoch,
-          hoverGridRef.current
+          hoverGridRef.current,
+          { hideDamageTexts: true }
         );
       } else {
+        if (hadFloatingDamagesRef.current) {
+          hadFloatingDamagesRef.current = false;
+          setFloatingDamageItems([]);
+        }
         renderVillageCanvas(
           ctx,
           width,
@@ -685,7 +823,7 @@ export default function App() {
       if (timeoutId !== null) window.clearTimeout(timeoutId);
       ro.disconnect();
     };
-  }, [commitFinishedBattleResult, showToast, syncBattleSnapshot]);
+  }, [commitFinishedBattleResult, showToast, syncBattleSnapshot, syncReplaySnapshot]);
 
   // Pointer helpers
   const clientToGrid = useCallback((clientX: number, clientY: number) => {
@@ -894,6 +1032,10 @@ export default function App() {
 
     const grid = clientToGrid(e.clientX, e.clientY);
     if (!grid) return;
+
+    if (mode === 'battle' && replayPlaybackRef.current) {
+      return;
+    }
 
     if (mode === 'battle' && battleRef.current) {
       const res = deployCardAt(battleRef.current, grid.gx, grid.gy, poolsRef.current);
@@ -1122,6 +1264,9 @@ export default function App() {
     sound.unlockAudio();
     sound.playClick();
     poolsRef.current = createVFXPools();
+    replayPlaybackRef.current = null;
+    setReplayHudSnapshot(null);
+    setLastRecordedReplay(null);
     const bState = createBattleState({
       targetName: params.targetName,
       targetTH: params.targetTH,
@@ -1136,6 +1281,7 @@ export default function App() {
     battleResultAppliedRef.current = false;
     cameraRef.current = { x: 0, y: 0, zoom: 0.95 };
     setAttackOpen(false);
+    setReplaysOpen(false);
     setClanCastleOpen(false);
     setClanChatOpen(false);
     setMissionsOpen(false);
@@ -1151,6 +1297,46 @@ export default function App() {
     setScreen('playing');
     syncBattleSnapshot();
   };
+
+  const startWatchReplay = useCallback(
+    (replay: BattleReplay) => {
+      sound.unlockAudio();
+      sound.playClick();
+      poolsRef.current = createVFXPools();
+      battleRef.current = null;
+      battleResultAppliedRef.current = false;
+      setBattleHudSnapshot(null);
+      const playback = createReplayPlayback(replay, 1);
+      replayPlaybackRef.current = playback;
+      cameraRef.current = { x: 0, y: 0, zoom: 0.95 };
+      setReplaysOpen(false);
+      setAttackOpen(false);
+      setClanCastleOpen(false);
+      setClanChatOpen(false);
+      setMissionsOpen(false);
+      setSettingsOpen(false);
+      setWechatPublishOpen(false);
+      setSelectedBuildingId(null);
+      setPlacingType(null);
+      setMovingBuildingId(null);
+      setEditMode(null);
+      setEditDraggingId(null);
+      editDragRef.current = null;
+      setMode('battle');
+      setScreen('playing');
+      syncReplaySnapshot();
+    },
+    [syncReplaySnapshot]
+  );
+
+  const exitReplayToVillage = useCallback(() => {
+    sound.playClick();
+    replayPlaybackRef.current = null;
+    setReplayHudSnapshot(null);
+    cameraRef.current = { x: 0, y: 0, zoom: 1.05 };
+    setMode('village');
+    setScreen('playing');
+  }, []);
 
   const appendClanChatEntries = useCallback((entries: ClanChatEntry[], notifyUnread = true) => {
     if (entries.length === 0) return;
@@ -1214,9 +1400,55 @@ export default function App() {
     [appendClanChatEntries]
   );
 
+  const handleGenerateVillageThumbnail = useCallback(() => {
+    try {
+      const generated = generateVillageThumbnailDataUrl(villageRef.current, {
+        nowMs: Date.now(),
+      });
+      setThumbnailPreview(generated);
+      sound.playClick();
+    } catch {
+      showToast('生成村庄缩略图失败，请稍后重试');
+    }
+  }, [showToast]);
+
+  const handleShareThumbnailToClan = useCallback(
+    (note: string) => {
+      if (!thumbnailPreview) return;
+      const now = Date.now();
+      const entry = createVillageLayoutShareEntry(
+        villageRef.current,
+        thumbnailPreview.dataUrl,
+        thumbnailPreview.summary,
+        note,
+        now
+      );
+      appendClanChatEntries([entry], false);
+      setThumbnailPreview(null);
+      setClanChatOpen(true);
+      setUnreadClanMessages(0);
+      sound.playUpgradeComplete();
+      showToast('已将村庄等距缩略图分享至部落聊天');
+
+      if (clanReplyTimerRef.current !== null) {
+        window.clearTimeout(clanReplyTimerRef.current);
+      }
+      const villageSnapshot = villageRef.current;
+      clanReplyTimerRef.current = window.setTimeout(() => {
+        const reply = createSimulatedLayoutReply(
+          villageSnapshot.clanName,
+          villageSnapshot,
+          Date.now()
+        );
+        appendClanChatEntries([reply], true);
+      }, 750);
+    },
+    [appendClanChatEntries, showToast, thumbnailPreview]
+  );
+
   const handleEndBattleEarly = () => {
     if (!battleRef.current) return;
-    finalizeBattle(battleRef.current);
+    finalizeBattle(battleRef.current, true);
     commitFinishedBattleResult();
     setScreen('gameover');
     syncBattleSnapshot();
@@ -1228,6 +1460,7 @@ export default function App() {
     battleRef.current = null;
     battleResultAppliedRef.current = false;
     setBattleHudSnapshot(null);
+    setLastRecordedReplay(null);
     cameraRef.current = { x: 0, y: 0, zoom: 1.05 };
     setMode('village');
     setScreen('playing');
@@ -1299,6 +1532,11 @@ export default function App() {
               Math.min(1.75, cameraRef.current.zoom + delta)
             );
           }}
+          onCenterView={() => {
+            sound.playClick();
+            resetVillageCamera(cameraRef.current);
+            showToast('已重置视野至村庄中心');
+          }}
           onOpenShop={() => {
             sound.playClick();
             setShopOpen(true);
@@ -1320,6 +1558,10 @@ export default function App() {
             sound.playClick();
             setMissionsOpen(true);
           }}
+          onOpenReplays={() => {
+            sound.playClick();
+            setReplaysOpen(true);
+          }}
           onOpenAttack={() => {
             sound.playClick();
             setAttackOpen(true);
@@ -1339,6 +1581,7 @@ export default function App() {
             setClanCastleOpen(false);
             setClanChatOpen(false);
             setMissionsOpen(false);
+            setReplaysOpen(false);
             setAttackOpen(false);
             setSettingsOpen(false);
             setSelectedBuildingId(null);
@@ -1348,6 +1591,7 @@ export default function App() {
             editDragRef.current = null;
             setEditMode(createEditModeState(villageRef.current));
           }}
+          onGenerateThumbnail={handleGenerateVillageThumbnail}
           onCancelPlacementOrMove={() => {
             setPlacingType(null);
             setMovingBuildingId(null);
@@ -1434,12 +1678,75 @@ export default function App() {
         />
       )}
 
+      {/* Active Battle Replay HUD */}
+      {screen !== 'title' && mode === 'battle' && replayHudSnapshot && (
+        <BattleReplayHUD
+          playback={replayHudSnapshot}
+          muted={muted}
+          toastMessage={toastMessage}
+          onTogglePlayPause={() => {
+            if (!replayPlaybackRef.current) return;
+            replayPlaybackRef.current.paused = !replayPlaybackRef.current.paused;
+            sound.playClick();
+            syncReplaySnapshot();
+          }}
+          onChangeSpeed={(spd) => {
+            if (!replayPlaybackRef.current) return;
+            replayPlaybackRef.current.speed = spd;
+            sound.playClick();
+            syncReplaySnapshot();
+          }}
+          onRestart={() => {
+            if (!replayPlaybackRef.current) return;
+            poolsRef.current = createVFXPools();
+            replayPlaybackRef.current = createReplayPlayback(
+              replayPlaybackRef.current.replay,
+              replayPlaybackRef.current.speed
+            );
+            sound.playClick();
+            syncReplaySnapshot();
+          }}
+          onSeek={(targetSec) => {
+            if (!replayPlaybackRef.current) return;
+            poolsRef.current = createVFXPools();
+            replayPlaybackRef.current = seekReplayPlayback(
+              replayPlaybackRef.current.replay,
+              targetSec,
+              replayPlaybackRef.current.speed,
+              replayPlaybackRef.current.paused,
+              poolsRef.current
+            );
+            syncReplaySnapshot();
+          }}
+          onExitReplay={exitReplayToVillage}
+          onToggleMute={handleToggleMute}
+          onOpenSettings={() => {
+            sound.unlockAudio();
+            sound.playClick();
+            setSettingsOpen(true);
+          }}
+        />
+      )}
+
       {/* Active Battle HUD */}
-      {screen !== 'title' && mode === 'battle' && battleHudSnapshot && (
+      {screen !== 'title' && mode === 'battle' && !replayHudSnapshot && battleHudSnapshot && (
         <BattleHUD
           battle={battleHudSnapshot}
           muted={muted}
           toastMessage={toastMessage}
+          floatingDamages={floatingDamageItems}
+          showFloatingDamage={showFloatingDamage}
+          onToggleFloatingDamage={() => {
+            sound.playClick();
+            setShowFloatingDamage((prev) => {
+              const next = !prev;
+              if (!next) {
+                hadFloatingDamagesRef.current = false;
+                setFloatingDamageItems([]);
+              }
+              return next;
+            });
+          }}
           onSelectCard={(card) => {
             if (battleRef.current) {
               battleRef.current.selectedCard = card;
@@ -1511,6 +1818,19 @@ export default function App() {
             setVillage(next);
             sound.playClick();
           }}
+          onUpgradeTroop={(tType: TroopType) => {
+            const res = upgradeTroop(villageRef.current, tType);
+            if (res.ok) {
+              villageRef.current = res.next;
+              setVillage(res.next);
+              sound.playUpgradeComplete();
+              showToast(
+                `${TROOP_CATALOG[tType].name} 升级至 Lv.${res.newLevel}（HP +${res.hpGain} · 秒伤 +${res.dpsGain}）`
+              );
+            } else {
+              showToast(res.reason);
+            }
+          }}
           onBrewSpell={(sType: SpellType) => {
             const res = brewSpell(villageRef.current, sType);
             if (res.ok) {
@@ -1562,6 +1882,55 @@ export default function App() {
             } else {
               showToast(res.reason);
             }
+          }}
+          onSaveFavoriteArmy={(name, composition) => {
+            const source = composition ?? {
+              army: villageRef.current.army,
+              spells: villageRef.current.spells,
+            };
+            const res = saveFavoriteArmyComposition(
+              villageRef.current,
+              name,
+              source,
+              Date.now()
+            );
+            if (res.ok) {
+              villageRef.current = res.next;
+              setVillage(res.next);
+              sound.playClick();
+              showToast(`已保存常用配兵「${res.favorite.name}」`);
+            } else {
+              showToast(res.reason);
+            }
+          }}
+          onQueueFavoriteArmy={(favoriteId) => {
+            const res = queueFavoriteArmyComposition(villageRef.current, favoriteId);
+            if (res.ok) {
+              let nextVillage = res.next;
+              if (res.trainedTroopsCount > 0) {
+                nextVillage = recordMissionProgress(
+                  nextVillage,
+                  'train_troops',
+                  res.trainedTroopsCount
+                );
+              }
+              villageRef.current = nextVillage;
+              setVillage(nextVillage);
+              sound.playUpgradeComplete();
+              const parts: string[] = [];
+              if (res.trainedTroopsCount > 0) parts.push(`+${res.trainedTroopsCount} 士兵`);
+              if (res.brewedSpellsCount > 0) parts.push(`+${res.brewedSpellsCount} 法术`);
+              showToast(`已按「${res.favorite.name}」训练：${parts.join('、')}`);
+            } else {
+              showToast(res.reason);
+            }
+          }}
+          onDeleteFavoriteArmy={(favoriteId) => {
+            const next = deleteFavoriteArmyComposition(villageRef.current, favoriteId);
+            villageRef.current = next;
+            setVillage(next);
+            sound.playClick();
+            showToast('已删除常用配兵方案');
           }}
         />
       )}
@@ -1670,11 +2039,51 @@ export default function App() {
         />
       )}
 
+      {/* Battle Replays List Modal */}
+      {replaysOpen && mode === 'village' && (
+        <ReplayListModal
+          replays={village.battleReplays ?? []}
+          onClose={() => setReplaysOpen(false)}
+          onWatchReplay={(replay) => startWatchReplay(replay)}
+          onDeleteReplay={(replayId) => {
+            const next: VillageState = {
+              ...villageRef.current,
+              battleReplays: deleteBattleReplay(villageRef.current.battleReplays, replayId),
+            };
+            villageRef.current = next;
+            setVillage(next);
+            sound.playClick();
+            showToast('已删除该条战报录像');
+          }}
+        />
+      )}
+
       {/* Battle Result Modal */}
-      {screen === 'gameover' && mode === 'battle' && battleHudSnapshot?.result && (
-        <BattleResultModal
-          result={battleHudSnapshot.result}
-          onReturnHome={handleReturnHomeFromBattle}
+      {screen === 'gameover' &&
+        mode === 'battle' &&
+        !replayHudSnapshot &&
+        battleHudSnapshot?.result && (
+          <BattleResultModal
+            result={battleHudSnapshot.result}
+            onReturnHome={handleReturnHomeFromBattle}
+            onWatchReplay={
+              lastRecordedReplay ? () => startWatchReplay(lastRecordedReplay) : undefined
+            }
+          />
+        )}
+
+      {/* Village Isometric Thumbnail Preview & Share Modal */}
+      {thumbnailPreview && mode === 'village' && (
+        <VillageThumbnailModal
+          village={village}
+          thumbnail={thumbnailPreview}
+          onRegenerate={handleGenerateVillageThumbnail}
+          onSavedLocal={(filename) => {
+            sound.playClick();
+            showToast(`已保存缩略图「${filename}」到本地`);
+          }}
+          onShareToClan={handleShareThumbnailToClan}
+          onClose={() => setThumbnailPreview(null)}
         />
       )}
 
@@ -1736,6 +2145,7 @@ export default function App() {
             setUnreadClanMessages(2);
             setRecentDonations([]);
             setMissionsOpen(false);
+            setReplaysOpen(false);
             setSettingsOpen(false);
             setScreen('playing');
             showToast('村庄已重置为初始状态');
@@ -1743,13 +2153,17 @@ export default function App() {
           onQuitToTitle={() => {
             flushSaveNow();
             battleRef.current = null;
+            replayPlaybackRef.current = null;
             battleResultAppliedRef.current = false;
             setBattleHudSnapshot(null);
+            setReplayHudSnapshot(null);
+            setLastRecordedReplay(null);
             setEditMode(null);
             setEditDraggingId(null);
             editDragRef.current = null;
             setClanCastleOpen(false);
             setClanChatOpen(false);
+            setReplaysOpen(false);
             setSettingsOpen(false);
             setMode('village');
             setScreen('title');

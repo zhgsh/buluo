@@ -1,4 +1,5 @@
 import React from 'react';
+import { Film } from 'lucide-react';
 import { TROOP_CATALOG } from '../game/catalog';
 import { ElixirIcon, GoldIcon, StarIcon, TrophyIcon } from '../game/svgIcons';
 import type { BattleResult, TroopType } from '../game/types';
@@ -6,11 +7,13 @@ import type { BattleResult, TroopType } from '../game/types';
 interface BattleResultModalProps {
   result: BattleResult;
   onReturnHome: () => void;
+  onWatchReplay?: () => void;
 }
 
 export const BattleResultModal: React.FC<BattleResultModalProps> = ({
   result,
   onReturnHome,
+  onWatchReplay,
 }) => {
   const deployedEntries = Object.entries(result.troopsDeployed).filter(
     ([, count]) => (count ?? 0) > 0
@@ -42,7 +45,7 @@ export const BattleResultModal: React.FC<BattleResultModalProps> = ({
           <h2 className="text-2xl font-extrabold text-white text-stroke-dark">
             {result.victory ? '大获全胜！' : '进攻失利'}
           </h2>
-          <p className="text-xs font-bold text-amber-100 mt-1">
+          <p className="text-xs font-bold text-amber-100 mt-1 tabular-nums">
             {result.targetName} · 用时 {result.durationSec}s
           </p>
         </div>
@@ -113,14 +116,26 @@ export const BattleResultModal: React.FC<BattleResultModalProps> = ({
             </div>
           )}
 
-          <button
-            type="button"
-            data-start="true"
-            onClick={onReturnHome}
-            className="clash-btn w-full py-3 rounded-xl bg-gradient-to-b from-emerald-400 to-emerald-600 border-2 border-emerald-950 shadow-[0_4px_0_#064e3b] text-emerald-950 font-extrabold text-base cursor-pointer"
-          >
-            返回村庄
-          </button>
+          <div className="flex items-center gap-2.5">
+            {onWatchReplay && (
+              <button
+                type="button"
+                onClick={onWatchReplay}
+                className="clash-btn flex-1 py-3 rounded-xl bg-gradient-to-b from-amber-400 to-amber-600 border-2 border-amber-950 shadow-[0_4px_0_#451a03] text-amber-950 font-extrabold text-sm flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
+              >
+                <Film className="w-4 h-4" />
+                观看回放
+              </button>
+            )}
+            <button
+              type="button"
+              data-start="true"
+              onClick={onReturnHome}
+              className="clash-btn flex-1 py-3 rounded-xl bg-gradient-to-b from-emerald-400 to-emerald-600 border-2 border-emerald-950 shadow-[0_4px_0_#064e3b] text-emerald-950 font-extrabold text-base whitespace-nowrap cursor-pointer"
+            >
+              返回村庄
+            </button>
+          </div>
         </div>
       </div>
     </div>

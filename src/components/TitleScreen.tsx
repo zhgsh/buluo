@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
 import { UploadCloud } from 'lucide-react';
-import { ClashCrestLogo } from '../game/svgIcons';
+import { GAME_ICON_URL } from '../game/gameIconAsset';
 
 interface TitleScreenProps {
   onStart: () => void;
@@ -48,7 +48,23 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
 
       {/* Top/Left Complementary Negative Space Lockup */}
       <div className="relative z-10 flex flex-col items-start justify-center flex-1 px-8 sm:px-16 max-w-2xl">
-        <ClashCrestLogo className="w-72 sm:w-96 h-auto drop-shadow-[0_10px_22px_rgba(0,0,0,0.65)] mb-5" />
+        <div className="flex items-center gap-4 sm:gap-5 mb-5">
+          <img
+            src={GAME_ICON_URL}
+            alt="天启崛起游戏图标"
+            data-testid="game-icon-title"
+            referrerPolicy="no-referrer"
+            className="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl border-2 border-amber-400/90 shadow-[0_10px_28px_rgba(0,0,0,0.65)] object-cover shrink-0"
+          />
+          <div className="leading-none">
+            <h1 className="font-display text-4xl sm:text-6xl font-black tracking-wider text-amber-200 drop-shadow-[0_4px_0_#1c130b] text-stroke-dark">
+              天启崛起
+            </h1>
+            <p className="mt-1.5 font-display text-xs sm:text-sm font-extrabold tracking-[0.28em] text-amber-300/95 text-stroke-sm uppercase">
+              APOCALYPSE RISING
+            </p>
+          </div>
+        </div>
 
         <p className="text-amber-100/95 text-base sm:text-lg font-semibold max-w-md leading-relaxed mb-8 text-stroke-sm">
           建造坚不可摧的部落要塞，训练野蛮人、弓箭手与空中气球军团，在实时攻防战中夺取三星荣耀。

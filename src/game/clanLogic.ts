@@ -265,6 +265,8 @@ export interface ClanChatEntry {
   text: string;
   troopType?: TroopType;
   troopCount?: number;
+  thumbnailDataUrl?: string;
+  layoutSummary?: string;
   timestampMs: number;
   isOwn?: boolean;
 }
@@ -377,3 +379,57 @@ export function createSimulatedAllianceReply(
   };
 }
 
+export function createVillageLayoutShareEntry(
+  village: VillageState,
+  thumbnailDataUrl: string,
+  layoutSummary: string,
+  note?: string,
+  nowMs: number = Date.now()
+): ClanChatEntry {
+  const trimmedNote = note?.trim();
+  const text = trimmedNote
+    ? `${trimmedNote}`
+    : `分享了当前 ${village.townHallLevel} 级大本营等距村庄阵型，欢迎盟友点评防线布局！`;
+
+  return {
+    id: nextChatId('layout'),
+    kind: 'chat',
+    senderName: '我（首领）',
+    text,
+    thumbnailDataUrl,
+    layoutSummary,
+    timestampMs: nowMs,
+    isOwn: true,
+  };
+}
+
+export function createSimulatedLayoutReply(
+  allianceName: string | undefined,
+  village: VillageState,
+  nowMs: number = Date.now()
+): ClanChatEntry {
+  const alliance = getAllianceByName(allianceName);
+  const responder = alliance.members[Math.abs(village.buildings.length + village.townHallLevel) % alliance.members.length];
+  const wallCount = village.buildings.filter((b) => b.type === 'wall').length;
+  const defenseCount = village.buildings.filter((b) =>
+    ['cannon', 'archer_tower', 'mortar', 'air_defense', 'wizard_tower'].includes(b.type)
+  ).length;
+
+  let feedback: string;
+  if (wallCount < 10) {
+    feedback = `收到阵型图！${village.townHallLevel} 级大本营核心摆得不错，建议在商店多补几段城墙把迫击炮和储金罐包住。`;
+  } else if (defenseCount >= 5) {
+    feedback = `这张等距鸟瞰图很清楚！${defenseCount} 座防御塔配合 ${wallCount} 段城墙交叉掩护，敌人很难从正面硬破。`;
+  } else {
+    feedback = `阵型结构一目了然！建议把加农炮和箭塔放在大本营外侧护卫，防空火力尽量靠内放置。`;
+  }
+
+  return {
+    id: nextChatId('chat'),
+    kind: 'chat',
+    senderName: responder.name,
+    senderRole: responder.role,
+    text: feedback,
+    timestampMs: nowMs,
+  };
+}

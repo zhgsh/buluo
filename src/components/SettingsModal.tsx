@@ -1,5 +1,6 @@
 import React from 'react';
-import { Music, UploadCloud, Volume2, VolumeX, X } from 'lucide-react';
+import { Download, Music, UploadCloud, Volume2, VolumeX, X } from 'lucide-react';
+import { GAME_ICON_DOWNLOAD_NAME, GAME_ICON_URL } from '../game/gameIconAsset';
 import type { BgmTrack } from '../game/sound';
 
 interface SettingsModalProps {
@@ -102,6 +103,30 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             >
               {muted ? '已静音（点击开启）' : '已开启（点击静音）'}
             </button>
+          </div>
+
+          <div className="flex items-center justify-between gap-3 rounded-xl bg-[#1c120a]/80 border-2 border-[#6e4723] px-4 py-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <img
+                src={GAME_ICON_URL}
+                alt="天启崛起游戏图标预览"
+                data-testid="game-icon-settings"
+                referrerPolicy="no-referrer"
+                className="w-11 h-11 rounded-xl border border-amber-400/80 object-cover shrink-0 shadow-md"
+              />
+              <div className="min-w-0 leading-tight">
+                <div className="text-sm font-extrabold text-amber-100 truncate">天启崛起 · 游戏图标</div>
+                <div className="text-[11px] text-amber-200/75 truncate">1:1 高清应用图标</div>
+              </div>
+            </div>
+            <a
+              href={GAME_ICON_URL}
+              download={GAME_ICON_DOWNLOAD_NAME}
+              className="clash-btn px-3 py-1.5 rounded-lg bg-[#3a2614] border border-[#7c5329] text-amber-100 text-xs font-extrabold flex items-center gap-1.5 shrink-0 whitespace-nowrap"
+            >
+              <Download className="w-3.5 h-3.5 text-amber-300" />
+              保存图标
+            </a>
           </div>
 
           {onOpenWechatPublish && (

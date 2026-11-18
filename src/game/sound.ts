@@ -108,6 +108,7 @@ class SoundEngine {
   private bgmStep = 0;
   private pageHidden = false;
   private hasUserGesture = false;
+  private sfxSuppressed = false;
 
   constructor() {
     const initial = loadAudioSettings();
@@ -115,8 +116,18 @@ class SoundEngine {
     this.bgmVolume = initial.bgmVolume;
   }
 
+  public withSuppressedSfx<T>(fn: () => T): T {
+    const prev = this.sfxSuppressed;
+    this.sfxSuppressed = true;
+    try {
+      return fn();
+    } finally {
+      this.sfxSuppressed = prev;
+    }
+  }
+
   private ensureContext(allowWhenMuted = false): AudioContext | null {
-    if (!allowWhenMuted && this.muted) return null;
+    if (!allowWhenMuted && (this.muted || this.sfxSuppressed)) return null;
     const wxObj = getWxAudioGlobals();
     const hasBrowserAudio = typeof window !== 'undefined';
     if (!hasBrowserAudio && !wxObj?.createWebAudioContext) return null;

@@ -154,7 +154,7 @@ export async function buildWechatMiniGame({ quiet = false, appid = '' } = {}) {
     'touristappid';
 
   const projectConfig = {
-    description: '部落冲突 · Clash of Clans 微信小游戏版',
+    description: '天启崛起 微信小游戏版',
     packOptions: {
       ignore: [
         {
@@ -198,7 +198,7 @@ export async function buildWechatMiniGame({ quiet = false, appid = '' } = {}) {
     'utf8'
   );
 
-  const readme = `# 部落冲突 · 微信小游戏打包产物 (dist-wechat)
+  const readme = `# 天启崛起 · 微信小游戏打包产物 (dist-wechat)
 
 ## 方式一：一键 CI 上传至微信小游戏发布平台
 在配置好环境变量 \`WECHAT_APPID\` 与 \`WECHAT_PRIVATE_KEY\`（或 \`WECHAT_PRIVATE_KEY_PATH\`）后运行：

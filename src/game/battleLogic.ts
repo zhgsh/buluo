@@ -1,12 +1,20 @@
 import {
   BUILDING_CATALOG,
+  getTroopLevelStats,
   GRID_SIZE,
+  MAX_TROOP_LEVEL,
   SPELL_CATALOG,
   SPELL_ORDER,
   TROOP_CATALOG,
   TROOP_ORDER,
 } from './catalog';
-import { dist2D, distanceToBuildingEdge } from './isoMath';
+import {
+  dist2D,
+  distanceToBuildingEdge,
+  gridToWorld,
+  worldToScreen,
+  type CameraState,
+} from './isoMath';
 import { sound } from './sound';
 import type {
   BattleBuilding,
@@ -163,30 +171,91 @@ export function spawnDamageNumber(
     | { kind: 'troop'; isAir: boolean; isHeavy?: boolean }
 ): void {
   const dmg = Math.max(1, Math.round(amount));
-  const jitterX = (Math.random() - 0.5) * (target.kind === 'building' ? 22 : 14);
+  const jitterX = (Math.random() - 0.5) * (target.kind === 'building' ? 24 : 16);
   if (target.kind === 'building') {
     const anchorPx = BUILDING_DAMAGE_ANCHOR_PX[target.buildingType] ?? 82;
     const heavy = Boolean(target.isHeavy) || dmg >= 80;
-    spawnFloatingText(pools, gx, gy, `-${dmg}`, heavy ? '#fb923c' : '#fde047', {
+    spawnFloatingText(pools, gx, gy, `-${dmg}`, heavy ? '#facc15' : '#fde047', {
+      anchorPx,
+      riseSpeedPx: 42,
+      jitterX,
+      scale: heavy ? 1.24 : 1.06,
+      kind: 'damage_building',
+      maxLife: 0.78,
+    });
+  } else {
+    const anchorPx = target.isAir ? 68 : 36;
+    const heavy = Boolean(target.isHeavy) || dmg >= 60;
+    spawnFloatingText(pools, gx, gy, `-${dmg}`, '#fde047', {
       anchorPx,
       riseSpeedPx: 36,
       jitterX,
-      scale: heavy ? 1.15 : 0.96,
-      kind: 'damage_building',
-      maxLife: 0.72,
-    });
-  } else {
-    const anchorPx = target.isAir ? 68 : 34;
-    const heavy = Boolean(target.isHeavy) || dmg >= 60;
-    spawnFloatingText(pools, gx, gy, `-${dmg}`, '#f87171', {
-      anchorPx,
-      riseSpeedPx: 32,
-      jitterX,
-      scale: heavy ? 1.08 : 0.92,
+      scale: heavy ? 1.06 : 0.92,
       kind: 'damage_troop',
-      maxLife: 0.68,
+      maxLife: 0.7,
     });
   }
+}
+
+export interface FloatingDamageOverlayItem {
+  id: string;
+  text: string;
+  color: string;
+  kind: 'damage_building' | 'damage_troop';
+  screenX: number;
+  screenY: number;
+  alpha: number;
+  scale: number;
+}
+
+export function projectFloatingDamageTexts(
+  pools: VFXPools,
+  viewportWidth: number,
+  viewportHeight: number,
+  camera: CameraState
+): FloatingDamageOverlayItem[] {
+  const items: FloatingDamageOverlayItem[] = [];
+  for (let i = 0; i < pools.texts.length; i++) {
+    const t = pools.texts[i];
+    if (!t.active) continue;
+    if (t.kind !== 'damage_building' && t.kind !== 'damage_troop') continue;
+
+    const wp = gridToWorld(t.x, t.y);
+    const sp = worldToScreen(
+      wp.x + t.jitterX,
+      wp.y - t.anchorPx - t.risePx,
+      viewportWidth,
+      viewportHeight,
+      camera
+    );
+
+    if (
+      sp.x < -80 ||
+      sp.x > viewportWidth + 80 ||
+      sp.y < -80 ||
+      sp.y > viewportHeight + 80
+    ) {
+      continue;
+    }
+
+    const progress = t.maxLife > 0 ? t.life / t.maxLife : 1;
+    const alpha = progress < 0.65 ? 1 : Math.max(0, (1 - progress) / 0.35);
+    const popScale =
+      progress < 0.16 ? 1 + (1 - progress / 0.16) * 0.28 : 1;
+    const zoomScale = Math.max(0.85, Math.min(1.2, camera.zoom));
+
+    items.push({
+      id: `fd_${i}_${Math.round(t.x * 10)}_${Math.round(t.y * 10)}`,
+      text: t.text,
+      color: t.color,
+      kind: t.kind,
+      screenX: sp.x,
+      screenY: sp.y,
+      alpha,
+      scale: t.scale * popScale * zoomScale,
+    });
+  }
+  return items;
 }
 
 export function createBattleState(params: {
@@ -298,6 +367,28 @@ export function createBattleState(params: {
     }
   }
 
+  const initialLayout = params.layout.map((item) => ({
+    type: item.type,
+    level: item.level,
+    gx: item.gx,
+    gy: item.gy,
+  }));
+  const initialTroops = { ...params.playerVillage.army };
+  const initialReinforcements: Partial<Record<TroopType, number>> = { ...availReinforcements };
+  const initialSpells = { ...params.playerVillage.spells };
+  const troopLevels: Record<TroopType, number> = {
+    barbarian: 1,
+    archer: 1,
+    giant: 1,
+    goblin: 1,
+    wall_breaker: 1,
+    balloon: 1,
+  };
+  for (const t of TROOP_ORDER) {
+    const lv = params.playerVillage.troopLevels?.[t] ?? 1;
+    troopLevels[t] = Math.max(1, Math.min(MAX_TROOP_LEVEL, Math.floor(lv)));
+  }
+
   return {
     targetName: params.targetName,
     targetTH: params.targetTH,
@@ -311,9 +402,10 @@ export function createBattleState(params: {
     troops: [],
     projectiles: [],
     spells: [],
-    availableTroops: { ...params.playerVillage.army },
+    availableTroops: { ...initialTroops },
     availableReinforcements: availReinforcements,
-    availableSpells: { ...params.playerVillage.spells },
+    availableSpells: { ...initialSpells },
+    troopLevels,
     troopsDeployed: {},
     reinforcementsDeployed: {},
     spellsUsed: {},
@@ -328,6 +420,12 @@ export function createBattleState(params: {
     hitstopTimer: 0,
     cameraTrauma: 0,
     endBeatTimer: 0,
+    initialLayout,
+    initialTroops,
+    initialReinforcements,
+    initialSpells,
+    replayEvents: [],
+    nextEntitySeq: 1,
   };
 }
 
@@ -515,6 +613,8 @@ export function deployCardAt(
     }
 
     const def = TROOP_CATALOG[card.type];
+    const troopLevel = battle.troopLevels?.[card.type] ?? 1;
+    const lvStats = getTroopLevelStats(card.type, troopLevel);
     if (isReinforcement) {
       battle.availableReinforcements[card.type] = avail - 1;
       battle.reinforcementsDeployed[card.type] =
@@ -527,9 +627,10 @@ export function deployCardAt(
       battle.phase = 'fighting';
     }
 
-    const baseHp = isReinforcement ? Math.round(def.hp * 1.15) : def.hp;
+    const seq = battle.nextEntitySeq++;
+    const baseHp = isReinforcement ? Math.round(lvStats.hp * 1.15) : lvStats.hp;
     const troop: BattleTroop = {
-      id: `tr_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      id: `tr_${seq}`,
       type: card.type,
       x: gx,
       y: gy,
@@ -538,7 +639,7 @@ export function deployCardAt(
       isAir: def.isAir,
       targetId: null,
       attackCooldown: 0.15,
-      walkPhase: Math.random() * Math.PI * 2,
+      walkPhase: (seq * 0.85) % (Math.PI * 2),
       facingX: 1,
       facingY: 0,
       hitFlashTimer: 0,
@@ -548,8 +649,18 @@ export function deployCardAt(
       rageTimer: 0,
       healTimer: 0,
       isReinforcement,
+      level: troopLevel,
     };
     battle.troops.push(troop);
+
+    battle.replayEvents.push({
+      seq: battle.replayEvents.length + 1,
+      timeSec: Number(battle.elapsedSec.toFixed(4)),
+      kind: card.kind,
+      type: card.type,
+      gx: Number(gx.toFixed(4)),
+      gy: Number(gy.toFixed(4)),
+    });
 
     // Auto-switch card if depleted
     const remaining = isReinforcement
@@ -610,8 +721,9 @@ export function deployCardAt(
       battle.phase = 'fighting';
     }
 
+    const seq = battle.nextEntitySeq++;
     battle.spells.push({
-      id: `sp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      id: `sp_${seq}`,
       type: card.type,
       x: gx,
       y: gy,
@@ -619,6 +731,15 @@ export function deployCardAt(
       remainingSec: sDef.durationSec,
       totalSec: sDef.durationSec,
       pulsePhase: 0,
+    });
+
+    battle.replayEvents.push({
+      seq: battle.replayEvents.length + 1,
+      timeSec: Number(battle.elapsedSec.toFixed(4)),
+      kind: 'spell',
+      type: card.type,
+      gx: Number(gx.toFixed(4)),
+      gy: Number(gy.toFixed(4)),
     });
 
     if (pools) {
@@ -873,7 +994,8 @@ export function stepBattle(
         tr.attackCooldown = def.attackSpeed;
         tr.attackAnimTimer = 0.22;
 
-        let hitDmg = def.dps * def.attackSpeed * dmgMult;
+        const lvStats = getTroopLevelStats(tr.type, tr.level ?? 1);
+        let hitDmg = lvStats.dps * def.attackSpeed * dmgMult;
         if (
           (def.favoriteTarget === 'resource' && isResourceBuilding(target.type)) ||
           (def.favoriteTarget === 'wall' && target.type === 'wall')
@@ -883,7 +1005,7 @@ export function stepBattle(
 
         if (tr.type === 'archer') {
           battle.projectiles.push({
-            id: `pr_${Date.now()}_${Math.random()}`,
+            id: `pr_${battle.nextEntitySeq++}`,
             kind: 'troop_arrow',
             startX: tr.x,
             startY: tr.y,
@@ -912,7 +1034,7 @@ export function stepBattle(
               damageBuilding(
                 battle,
                 b,
-                def.dps * def.attackSpeed * mult * dmgMult,
+                lvStats.dps * def.attackSpeed * mult * dmgMult,
                 pools,
                 b.type === 'wall'
               );
@@ -1007,7 +1129,7 @@ export function stepBattle(
                   : 0.2;
 
           battle.projectiles.push({
-            id: `dp_${Date.now()}_${Math.random()}`,
+            id: `dp_${battle.nextEntitySeq++}`,
             kind,
             startX: bx,
             startY: by,
@@ -1146,9 +1268,10 @@ export function stepBattle(
   }
 }
 
-export function finalizeBattle(battle: BattleState): BattleResult {
+export function finalizeBattle(battle: BattleState, endedEarly = false): BattleResult {
   if (battle.result) return battle.result;
   battle.phase = 'ended';
+  battle.endedEarly = endedEarly;
   const victory = battle.stars >= 1;
   const trophyDelta = battle.isCampaign
     ? victory
@@ -1179,3 +1302,88 @@ export function finalizeBattle(battle: BattleState): BattleResult {
   else sound.playDefeat();
   return result;
 }
+
+export interface BattleDeploymentCardItem {
+  keyLabel: string;
+  card: NonNullable<BattleState['selectedCard']>;
+  name: string;
+  role: string;
+  count: number;
+  deployed: number;
+  depleted: boolean;
+  isSelected: boolean;
+  isReinforcement: boolean;
+}
+
+export function buildBattleDeploymentCards(
+  battle: BattleState
+): BattleDeploymentCardItem[] {
+  const items: BattleDeploymentCardItem[] = [];
+  let shortcutIdx = 1;
+
+  for (const t of TROOP_ORDER) {
+    const count = battle.availableTroops[t] ?? 0;
+    const deployed = battle.troopsDeployed[t] ?? 0;
+    if (count > 0 || deployed > 0) {
+      const card: NonNullable<BattleState['selectedCard']> = { kind: 'troop', type: t };
+      items.push({
+        keyLabel: String(shortcutIdx++),
+        card,
+        name: TROOP_CATALOG[t].name,
+        role: TROOP_CATALOG[t].role,
+        count,
+        deployed,
+        depleted: count <= 0,
+        isSelected:
+          battle.selectedCard?.kind === card.kind && battle.selectedCard?.type === card.type,
+        isReinforcement: false,
+      });
+    }
+  }
+
+  for (const t of TROOP_ORDER) {
+    const count = battle.availableReinforcements?.[t] ?? 0;
+    const deployed = battle.reinforcementsDeployed?.[t] ?? 0;
+    if (count > 0 || deployed > 0) {
+      const card: NonNullable<BattleState['selectedCard']> = {
+        kind: 'reinforcement',
+        type: t,
+      };
+      items.push({
+        keyLabel: String(shortcutIdx++),
+        card,
+        name: TROOP_CATALOG[t].name,
+        role: '部落城堡援军 (+15% 战力)',
+        count,
+        deployed,
+        depleted: count <= 0,
+        isSelected:
+          battle.selectedCard?.kind === card.kind && battle.selectedCard?.type === card.type,
+        isReinforcement: true,
+      });
+    }
+  }
+
+  for (const s of SPELL_ORDER) {
+    const count = battle.availableSpells[s] ?? 0;
+    const deployed = battle.spellsUsed[s] ?? 0;
+    if (count > 0 || deployed > 0) {
+      const card: NonNullable<BattleState['selectedCard']> = { kind: 'spell', type: s };
+      items.push({
+        keyLabel: String(shortcutIdx++),
+        card,
+        name: SPELL_CATALOG[s].name,
+        role: SPELL_CATALOG[s].role,
+        count,
+        deployed,
+        depleted: count <= 0,
+        isSelected:
+          battle.selectedCard?.kind === card.kind && battle.selectedCard?.type === card.type,
+        isReinforcement: false,
+      });
+    }
+  }
+
+  return items;
+}
+

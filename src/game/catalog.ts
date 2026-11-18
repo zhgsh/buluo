@@ -423,6 +423,103 @@ export const TROOP_ORDER: TroopType[] = [
 
 export const SPELL_ORDER: SpellType[] = ['heal', 'rage'];
 
+export const MAX_TROOP_LEVEL = 5;
+
+export function getTroopLevelStats(
+  type: TroopType,
+  rawLevel = 1
+): {
+  level: number;
+  hp: number;
+  dps: number;
+  damagePerHit: number;
+} {
+  const def = TROOP_CATALOG[type];
+  const level = Math.max(1, Math.min(MAX_TROOP_LEVEL, Math.floor(rawLevel || 1)));
+  const multiplier = 1 + (level - 1) * 0.2;
+  const hp = Math.round(def.hp * multiplier);
+  const dps = Math.round(def.dps * multiplier);
+  const damagePerHit = Math.round(dps * def.attackSpeed);
+  return { level, hp, dps, damagePerHit };
+}
+
+export function getTroopUpgradeRequirement(
+  type: TroopType,
+  currentLevel: number
+): {
+  nextLevel: number;
+  elixirCost: number;
+  requiredTownHall: number;
+  requiredBarracks: number;
+} | null {
+  const clamped = Math.max(1, Math.floor(currentLevel || 1));
+  if (clamped >= MAX_TROOP_LEVEL) return null;
+  const def = TROOP_CATALOG[type];
+  const nextLevel = clamped + 1;
+  const baseElixir = def.trainCostElixir * 10 + def.barracksLevelRequired * 150;
+  const elixirCost = Math.round((baseElixir * clamped) / 50) * 50;
+  const requiredTownHall = Math.min(5, Math.max(1, nextLevel));
+  const requiredBarracks = Math.max(def.barracksLevelRequired, Math.min(5, nextLevel));
+  return {
+    nextLevel,
+    elixirCost,
+    requiredTownHall,
+    requiredBarracks,
+  };
+}
+
+export interface TroopCombatDetails {
+  damageType: string;
+  damageRadius: string;
+  targetPreference: string;
+  attackRange: string;
+  attackSpeed: string;
+  moveSpeed: string;
+  unitDomain: string;
+  damagePerHit: number;
+}
+
+export function getTroopCombatDetails(
+  type: TroopType,
+  rawLevel = 1
+): TroopCombatDetails {
+  const def = TROOP_CATALOG[type];
+  const stats = getTroopLevelStats(type, rawLevel);
+
+  const damageType =
+    def.splashRadius && def.splashRadius > 0
+      ? '范围溅射'
+      : def.range >= 2.0
+        ? '单体远程'
+        : '单体近战';
+
+  const damageRadius =
+    def.splashRadius && def.splashRadius > 0
+      ? `${def.splashRadius} 格溅射`
+      : '单体（无溅射）';
+
+  const mult = def.favoriteMultiplier ?? 1;
+  const targetPreference =
+    def.favoriteTarget === 'defense'
+      ? '防御建筑'
+      : def.favoriteTarget === 'resource'
+        ? `资源建筑（${mult}× 伤害）`
+        : def.favoriteTarget === 'wall'
+          ? `城墙（${mult}× 伤害）`
+          : '任意目标';
+
+  return {
+    damageType,
+    damageRadius,
+    targetPreference,
+    attackRange: `${def.range} 格`,
+    attackSpeed: `${def.attackSpeed} 秒/次`,
+    moveSpeed: `${def.moveSpeed} 格/秒`,
+    unitDomain: def.isAir ? '空中单位' : '地面单位',
+    damagePerHit: stats.damagePerHit,
+  };
+}
+
 function wallLine(gx1: number, gy1: number, gx2: number, gy2: number, level = 1) {
   const res: Array<{ type: BuildingType; level: number; gx: number; gy: number }> = [];
   const dx = Math.sign(gx2 - gx1);
@@ -613,6 +710,14 @@ export function createInitialVillage(): VillageState {
       goblin: 0,
       wall_breaker: 0,
       balloon: 0,
+    },
+    troopLevels: {
+      barbarian: 1,
+      archer: 1,
+      giant: 1,
+      goblin: 1,
+      wall_breaker: 1,
+      balloon: 1,
     },
     spells: {
       heal: 1,

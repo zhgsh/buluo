@@ -1608,7 +1608,8 @@ export function renderBattleCanvas(
   battle: BattleState,
   pools: VFXPools,
   nowMs: number,
-  hoverGrid: { gx: number; gy: number } | null
+  hoverGrid: { gx: number; gy: number } | null,
+  options?: { hideDamageTexts?: boolean }
 ) {
   preloadBuildingSprites();
   preloadTroopSprites();
@@ -1805,6 +1806,12 @@ export function renderBattleCanvas(
   ctx.textBaseline = 'middle';
   for (const t of pools.texts) {
     if (!t.active) continue;
+    if (
+      options?.hideDamageTexts &&
+      (t.kind === 'damage_building' || t.kind === 'damage_troop')
+    ) {
+      continue;
+    }
     const wp = gridToWorld(t.x, t.y);
     const sp = worldToScreen(
       wp.x + t.jitterX,
@@ -1826,10 +1833,14 @@ export function renderBattleCanvas(
     ctx.font =
       t.kind === 'loot'
         ? '800 14px "Plus Jakarta Sans", sans-serif'
-        : '900 15px "Plus Jakarta Sans", sans-serif';
+        : '900 17px "Plus Jakarta Sans", sans-serif';
     ctx.lineJoin = 'round';
+    if (t.kind === 'damage_building' || t.kind === 'damage_troop') {
+      ctx.shadowColor = 'rgba(250, 204, 21, 0.55)';
+      ctx.shadowBlur = 8;
+    }
     ctx.strokeStyle = '#140c06';
-    ctx.lineWidth = t.kind === 'loot' ? 3.5 : 4;
+    ctx.lineWidth = t.kind === 'loot' ? 3.5 : 4.5;
     ctx.strokeText(t.text, 0, 0);
     ctx.fillStyle = t.color;
     ctx.fillText(t.text, 0, 0);

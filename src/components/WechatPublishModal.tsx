@@ -10,6 +10,7 @@ import {
   UploadCloud,
   X,
 } from 'lucide-react';
+import { GAME_ICON_URL } from '../game/gameIconAsset';
 
 interface BundleFileStat {
   path: string;
@@ -78,7 +79,7 @@ export const WechatPublishModal: React.FC<WechatPublishModalProps> = ({
   const [previewing, setPreviewing] = useState(false);
 
   const [version, setVersion] = useState('1.0.0');
-  const [desc, setDesc] = useState('部落冲突微信小游戏发布版本');
+  const [desc, setDesc] = useState('天启崛起微信小游戏发布版本');
   const [robot, setRobot] = useState(1);
 
   const [steps, setSteps] = useState<PublishStep[]>([]);
@@ -177,7 +178,7 @@ export const WechatPublishModal: React.FC<WechatPublishModalProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           version: version.trim() || '1.0.0',
-          desc: desc.trim() || '部落冲突微信小游戏发布版本',
+          desc: desc.trim() || '天启崛起微信小游戏发布版本',
           robot,
         }),
       });
@@ -302,9 +303,12 @@ export const WechatPublishModal: React.FC<WechatPublishModalProps> = ({
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 bg-[#1c120a] border-b-2 border-[#6e4723] shrink-0">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-emerald-600/20 border border-emerald-500/60 flex items-center justify-center">
-              <UploadCloud className="w-5 h-5 text-emerald-400" />
-            </div>
+            <img
+              src={GAME_ICON_URL}
+              alt="天启崛起游戏图标"
+              referrerPolicy="no-referrer"
+              className="w-10 h-10 rounded-xl border border-amber-400/80 object-cover shrink-0 shadow-md"
+            />
             <div>
               <h2 className="text-lg font-extrabold text-amber-100">
                 微信小游戏发布平台

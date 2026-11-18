@@ -1,5 +1,8 @@
 import {
   BUILDING_CATALOG,
+  getTroopLevelStats,
+  getTroopUpgradeRequirement,
+  MAX_TROOP_LEVEL,
   SPELL_CATALOG,
   SPELL_ORDER,
   TROOP_CATALOG,
@@ -8,6 +11,7 @@ import {
 import { canPlaceBuilding } from './isoMath';
 import type {
   BuildingType,
+  FavoriteArmyComposition,
   PlacedBuilding,
   SpellType,
   TrainingQueueSnapshot,
@@ -461,6 +465,132 @@ export function dismissTroop(
   };
 }
 
+export interface TroopUpgradeInfo {
+  currentLevel: number;
+  nextLevel: number | null;
+  isMaxLevel: boolean;
+  unlocked: boolean;
+  meetsTownHall: boolean;
+  meetsBarracks: boolean;
+  meetsElixir: boolean;
+  canUpgrade: boolean;
+  elixirCost: number;
+  requiredTownHall: number;
+  requiredBarracks: number;
+  currentStats: ReturnType<typeof getTroopLevelStats>;
+  nextStats: ReturnType<typeof getTroopLevelStats> | null;
+  blockReason: string | null;
+}
+
+export function getTroopLevel(village: VillageState, troopType: TroopType): number {
+  const raw = village.troopLevels?.[troopType] ?? 1;
+  return Math.max(1, Math.min(MAX_TROOP_LEVEL, Math.floor(raw)));
+}
+
+export function getTroopUpgradeInfo(
+  village: VillageState,
+  troopType: TroopType
+): TroopUpgradeInfo {
+  const def = TROOP_CATALOG[troopType];
+  const caps = getResourceCaps(village);
+  const currentLevel = getTroopLevel(village, troopType);
+  const currentStats = getTroopLevelStats(troopType, currentLevel);
+  const unlocked = caps.maxBarracksLevel >= def.barracksLevelRequired;
+  const req = getTroopUpgradeRequirement(troopType, currentLevel);
+
+  if (!req) {
+    return {
+      currentLevel,
+      nextLevel: null,
+      isMaxLevel: true,
+      unlocked,
+      meetsTownHall: true,
+      meetsBarracks: true,
+      meetsElixir: true,
+      canUpgrade: false,
+      elixirCost: 0,
+      requiredTownHall: village.townHallLevel,
+      requiredBarracks: def.barracksLevelRequired,
+      currentStats,
+      nextStats: null,
+      blockReason: '已达最高等级',
+    };
+  }
+
+  const meetsTownHall = village.townHallLevel >= req.requiredTownHall;
+  const meetsBarracks = caps.maxBarracksLevel >= req.requiredBarracks;
+  const meetsElixir = village.elixir >= req.elixirCost;
+  const canUpgrade = unlocked && meetsTownHall && meetsBarracks && meetsElixir;
+
+  let blockReason: string | null = null;
+  if (!unlocked) {
+    blockReason = `需 ${def.barracksLevelRequired} 级兵营解锁`;
+  } else if (!meetsTownHall) {
+    blockReason = `需 ${req.requiredTownHall} 级大本营`;
+  } else if (!meetsBarracks) {
+    blockReason = `需 ${req.requiredBarracks} 级兵营`;
+  } else if (!meetsElixir) {
+    blockReason = `圣水需 ${req.elixirCost}`;
+  }
+
+  return {
+    currentLevel,
+    nextLevel: req.nextLevel,
+    isMaxLevel: false,
+    unlocked,
+    meetsTownHall,
+    meetsBarracks,
+    meetsElixir,
+    canUpgrade,
+    elixirCost: req.elixirCost,
+    requiredTownHall: req.requiredTownHall,
+    requiredBarracks: req.requiredBarracks,
+    currentStats,
+    nextStats: getTroopLevelStats(troopType, req.nextLevel),
+    blockReason,
+  };
+}
+
+export function upgradeTroop(
+  village: VillageState,
+  troopType: TroopType
+):
+  | {
+      ok: true;
+      next: VillageState;
+      previousLevel: number;
+      newLevel: number;
+      elixirSpent: number;
+      hpGain: number;
+      dpsGain: number;
+    }
+  | { ok: false; reason: string } {
+  const info = getTroopUpgradeInfo(village, troopType);
+  if (!info.canUpgrade || !info.nextLevel || !info.nextStats) {
+    return { ok: false, reason: info.blockReason ?? '暂不满足升级条件' };
+  }
+
+  const nextLevels: Partial<Record<TroopType, number>> = {
+    ...(village.troopLevels ?? {}),
+    [troopType]: info.nextLevel,
+  };
+
+  return {
+    ok: true,
+    next: {
+      ...village,
+      elixir: village.elixir - info.elixirCost,
+      xp: (village.xp ?? 0) + 15 * info.currentLevel,
+      troopLevels: nextLevels,
+    },
+    previousLevel: info.currentLevel,
+    newLevel: info.nextLevel,
+    elixirSpent: info.elixirCost,
+    hpGain: info.nextStats.hp - info.currentStats.hp,
+    dpsGain: info.nextStats.dps - info.currentStats.dps,
+  };
+}
+
 export function brewSpell(
   village: VillageState,
   spellType: SpellType
@@ -595,6 +725,115 @@ export function repeatTrainingQueue(
     next: cur,
     trainedTroopsCount,
     brewedSpellsCount,
+  };
+}
+
+export const MAX_FAVORITE_ARMIES = 8;
+
+export function suggestFavoriteArmyName(
+  army: Partial<Record<TroopType, number>>,
+  spells: Partial<Record<SpellType, number>>
+): string {
+  const giants = army.giant ?? 0;
+  const balloons = army.balloon ?? 0;
+  const archers = army.archer ?? 0;
+  const barbarians = army.barbarian ?? 0;
+  const goblins = army.goblin ?? 0;
+  const heals = spells.heal ?? 0;
+
+  if (giants > 0 && heals > 0) return 'Giant-Healer';
+  if (balloons > 0) return '气球空袭流';
+  if (giants > 0 && archers > 0) return '胖弓推进流';
+  if (goblins >= 6) return '哥布林掠夺流';
+  if (barbarians > 0 && archers > 0) return '野蛮弓箭流';
+  return '自定义配兵';
+}
+
+export function saveFavoriteArmyComposition(
+  village: VillageState,
+  rawName: string,
+  source: TrainingQueueSnapshot = { army: village.army, spells: village.spells },
+  nowMs = Date.now()
+):
+  | { ok: true; next: VillageState; favorite: FavoriteArmyComposition }
+  | { ok: false; reason: string } {
+  const trimmedName = rawName.trim().slice(0, 24);
+  if (!trimmedName) {
+    return { ok: false, reason: '请输入配兵方案名称' };
+  }
+  const cloned = cloneTrainingQueue(source);
+  if (!hasTrainingQueueEntries(cloned)) {
+    return { ok: false, reason: '当前军队与法术为空，无法保存配兵方案' };
+  }
+
+  const existing = village.favoriteArmies ?? [];
+  const favorite: FavoriteArmyComposition = {
+    id: `fav_${nowMs}_${Math.random().toString(36).slice(2, 6)}`,
+    name: trimmedName,
+    army: cloned.army,
+    spells: cloned.spells,
+    createdAtMs: nowMs,
+  };
+
+  // Replace if a scheme with the exact same name exists, otherwise prepend cleanly within limit
+  const filtered = existing.filter((item) => item.name !== trimmedName);
+  const nextFavorites = [favorite, ...filtered].slice(0, MAX_FAVORITE_ARMIES);
+
+  return {
+    ok: true,
+    favorite,
+    next: {
+      ...village,
+      favoriteArmies: nextFavorites,
+    },
+  };
+}
+
+export function deleteFavoriteArmyComposition(
+  village: VillageState,
+  favoriteId: string
+): VillageState {
+  const nextFavorites = (village.favoriteArmies ?? []).filter(
+    (item) => item.id !== favoriteId
+  );
+  return {
+    ...village,
+    favoriteArmies: nextFavorites,
+  };
+}
+
+export function queueFavoriteArmyComposition(
+  village: VillageState,
+  favoriteId: string
+):
+  | {
+      ok: true;
+      next: VillageState;
+      favorite: FavoriteArmyComposition;
+      trainedTroopsCount: number;
+      brewedSpellsCount: number;
+    }
+  | { ok: false; reason: string } {
+  const fav = (village.favoriteArmies ?? []).find((item) => item.id === favoriteId);
+  if (!fav) {
+    return { ok: false, reason: '未找到该配兵方案' };
+  }
+  const res = repeatTrainingQueue(village, {
+    army: fav.army,
+    spells: fav.spells,
+  });
+  if (!res.ok) {
+    return res;
+  }
+  return {
+    ok: true,
+    favorite: fav,
+    trainedTroopsCount: res.trainedTroopsCount,
+    brewedSpellsCount: res.brewedSpellsCount,
+    next: {
+      ...res.next,
+      lastTrainingQueue: cloneTrainingQueue({ army: fav.army, spells: fav.spells }),
+    },
   };
 }
 
